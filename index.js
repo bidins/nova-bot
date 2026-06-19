@@ -13,7 +13,7 @@ const PRODUCT_COURSE_MAP = {
 };
 
 async function addCoursesToClient(email, courseIds, expiresDate) {
-  console.log('[nova-bot] Saku: ' + email + ', kursi: ' + courseIds + ', lidz: ' + expiresDate);
+  console.log('[nova-bot] Saku: ' + email);
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
   try {
     const page = await browser.newPage();
@@ -25,12 +25,12 @@ async function addCoursesToClient(email, courseIds, expiresDate) {
     await page.waitForNavigation({ waitUntil: 'networkidle2' });
     console.log('[nova-bot] Ielogojies Nova');
     await page.goto(NOVA_URL + '/resources/clients', { waitUntil: 'networkidle2' });
-    await page.waitForTimeout(1000);
-    const searchBox = await page.$('input[placeholder="Search"]');
+    await page.waitForTimeout(2000);
+    const searchBox = await page.$('input[type="search"], input[placeholder="Search"], .relative input, input.block');
     if (!searchBox) throw new Error('Nav search box');
     await searchBox.click();
     await searchBox.type(email);
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
     await page.waitForSelector('table tbody tr', { timeout: 30000 });
     await page.waitForTimeout(500);
     const clientLink = await page.$('table tbody tr td a');
