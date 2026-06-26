@@ -175,36 +175,66 @@ async function openAddCourseModal(page, clientId) {
   await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
 }
 
+/** Atrod kursa dropdown iekšējo search lauku (h-10 + px-3 klase; fallback dusk=null/Search). */
+async function findDropdownSearch(page) {
+  for (const h of await page.$$('input[type="search"]')) {
+    const ok = await page.evaluate((el) => el.offsetParent !== null && /\bh-10\b/.test(el.className) && /\bpx-3\b/.test(el.className), h);
+    if (ok) return h;
+  }
+  for (const h of await page.$$('input[type="search"]')) {
+    const ok = await page.evaluate((el) => el.offsetParent !== null && el.getAttribute('dusk') === null && el.placeholder === 'Search', h);
+    if (ok) return h;
+  }
+  return null;
+}
+
+/** Atver dropdown un izvēlas opciju, kuras teksts satur "(#id)". Robusti pret laiku/diakritiku. */
+async function selectCourseOption(page, courseId, title) {
+  await page.click('[dusk="course_id-search-input"]');
+  await page.waitForSelector('[dusk="course_id-search-input-results"]', { timeout: 8000 }).catch(() => {});
+  await wait(900);
+
+  const tryPick = () => page.evaluate((id) => {
+    const el = [...document.querySelectorAll('[dusk^="course_id-search-input-result-"]')].find((e) => e.textContent.includes(`(#${id})`));
+    if (!el) return null;
+    el.click();
+    return el.textContent.trim();
+  }, courseId);
+
+  // 1) varbūt jau redzams noklusējuma sarakstā
+  let picked = await tryPick();
+  if (picked) return picked;
+
+  // 2) meklēt pēc nosaukuma — vairāki varianti (pilns + garākais ASCII vārds, diakritiku dēļ)
+  const ascii = title.replace(/[^\x00-\x7F]/g, ' ').trim();
+  const longestAscii = ascii.split(/\s+/).filter((w) => w.length >= 3).sort((a, b) => b.length - a.length)[0] || '';
+  const queries = [...new Set([title.slice(0, 25), longestAscii].filter(Boolean))];
+
+  for (const q of queries) {
+    const search = await findDropdownSearch(page);
+    if (!search) break;
+    await search.click({ clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    await search.type(q, { delay: 50 });
+    await wait(3000);
+    picked = await tryPick();
+    if (picked) return picked;
+  }
+
+  // diagnostika logos (ielogo redzamās opcijas)
+  const opts = await page.evaluate(() => [...document.querySelectorAll('[dusk^="course_id-search-input-result-"]')].map((e) => e.textContent.trim()));
+  log(`  DIAG: #${courseId} nav atrasts. Redzamas ${opts.length} opcijas: ${JSON.stringify(opts.slice(0, 15))}`);
+  return null;
+}
+
 /** Izvēlas kursu modālī pēc ID (caur nosaukumu) un iestata expires. */
 async function fillCourse(page, courseId, expiresDate) {
   const title = COURSE_TITLES[courseId];
   if (!title) throw new Error(`Nav nosaukuma kursam #${courseId} (papildini courses-map.json)`);
 
-  // atvērt kursa dropdown
-  await page.click('[dusk="course_id-search-input"]');
-  await wait(900);
-
-  // atrast dropdown iekšējo search lauku (dusk=null, placeholder "Search")
-  let search = null;
-  for (const h of await page.$$('input[type="search"]')) {
-    const ok = await page.evaluate((el) => el.offsetParent !== null && el.getAttribute('dusk') === null && el.placeholder === 'Search', h);
-    if (ok) { search = h; break; }
-  }
-  if (!search) throw new Error('Nav kursa dropdown search lauka');
-
-  await search.click({ clickCount: 3 });
-  await page.keyboard.press('Backspace');
-  await search.type(title.slice(0, 25), { delay: 40 });
-  await wait(2200);
-
-  const picked = await page.evaluate((id) => {
-    const el = [...document.querySelectorAll('[dusk^="course_id-search-input-result-"]')]
-      .find((e) => e.textContent.includes(`(#${id})`));
-    if (!el) return null;
-    el.click();
-    return el.textContent.trim();
-  }, courseId);
+  const picked = await selectCourseOption(page, courseId, title);
   if (!picked) throw new Error(`Kurss #${courseId} ("${title}") nav atrodams dropdown`);
+  log(`  Izvēlēts: ${picked}`);
   await wait(800);
 
   // expires (datetime-local prasa YYYY-MM-DDTHH:MM)
