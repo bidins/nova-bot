@@ -11,17 +11,41 @@ Ja klients vēl nav reģistrējies — ieliek gaidīšanas rindā un periodiski 
 - `.env.example` — visi vides mainīgie
 
 ## Produktu → kursu karte
-Rediģē `PRODUCT_COURSE_MAP` failā `index.js`:
+Rediģē `PRODUCT_COURSE_MAP` failā `index.js`. Divi varianti:
+
+**A) Visi uzreiz:**
 ```js
-'53236774535434': { courses: [190, 196, 159], expires: '2026-08-20', label: 'Vasaras €57 Pamata' },
-'53236774568202': { courses: [190, 196, 159, 192, 172, 154, 164, 160, 165], expires: '2026-10-07', label: 'Vasaras €97 Pro' },
+'53236774535434': { label: 'Vasaras €57 Pamata', expires: '2026-08-20', courses: [190, 196, 159] },
+```
+
+**B) Pakāpeniski (drip)** — daļa uzreiz, pārējie pēc N dienām:
+```js
+'53236774568202': {
+  label: 'Vasaras €97 Pro', expires: '2026-10-07',
+  drip: [
+    { delayDays: 0, courses: [190, 196, 159] }, // uzreiz
+    { delayDays: 1, courses: [192, 172, 154] }, // pēc 1 dienas
+    { delayDays: 2, courses: [164, 160, 165] }, // pēc 2 dienām
+  ],
+},
 ```
 Ja pievieno jaunu kursu ID — pārliecinies, ka tas ir arī `courses-map.json`.
 
+## Jau pieslēgts kurss (expiry maiņa)
+Ja klientam kurss jau ir (piem. otrais pirkums), bots automātiski **atjaunina expiry** caur Nova
+"Change Expire" darbību. Uzvedību nosaka `EXPIRY_POLICY`:
+- `extend` (noklusējums) — pagarina tikai, ja jaunais datums vēlāks; nekad nesaīsina
+- `overwrite` — vienmēr uzstāda jauno datumu
+- `skip` — neko nemaina
+
+## Aizkavēta rinda (jobs)
+Drip grupas un neregistrēti klienti nonāk vienotā `jobs.json` rindā ar `runAt` laiku. Worker tos
+periodiski (`RETRY_INTERVAL_MIN`) izpilda, kad pienācis laiks / klients reģistrējies.
+
 ## Galapunkti
 - `POST /webhook/shopify` — Shopify orders/paid webhook
-- `POST /add` — manuāls pieslēgums: `{ "email": "...", "courses": [190], "expires": "2026-08-20" }`
-- `GET /pending` — pašreizējā gaidīšanas rinda
+- `POST /add` — manuāls pieslēgums: `{ "email": "...", "courses": [190], "expires": "2026-08-20", "delayDays": 0 }` (delayDays>0 = ieliek rindā ar aizkavi)
+- `GET /jobs` — pašreizējā darbu/gaidīšanas rinda
 - `GET /` — veselības pārbaude
 
 ## Drošs tests

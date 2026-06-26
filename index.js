@@ -35,15 +35,30 @@ const NOVA_EMAIL = process.env.NOVA_EMAIL;
 const NOVA_PASSWORD = process.env.NOVA_PASSWORD;
 const PORT = process.env.PORT || 3000;
 const DRY_RUN = process.env.DRY_RUN === '1'; // ja 1 — neklikšķina "Run Action" (drošs tests)
+// Ko darīt, ja kurss klientam JAU ir pievienots: 'extend' (tikai pagarināt), 'overwrite' (vienmēr jaunais), 'skip' (neko)
+const EXPIRY_POLICY = process.env.EXPIRY_POLICY || 'extend';
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || ''; // ja tukšs — HMAC netiek pārbaudīts
 const RETRY_INTERVAL_MIN = Number(process.env.RETRY_INTERVAL_MIN || 30); // cik bieži pārbaudīt pending
 const PENDING_MAX_DAYS = Number(process.env.PENDING_MAX_DAYS || 30); // cik ilgi turēt pending pirms padodas
-const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'pending.json');
+const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'jobs.json');
 
-// Shopify variant ID -> kursu ID saraksts + beigu datums (YYYY-MM-DD)
+// Shopify variant ID -> kursi + beigu datums (YYYY-MM-DD).
+// Variants A (vienkāršs): { courses: [...], expires, label } — visi kursi uzreiz.
+// Variants B (drip): { drip: [{delayDays, courses}, ...], expires, label } — pakāpeniski.
 const PRODUCT_COURSE_MAP = {
-  '53236774535434': { courses: [190, 196, 159], expires: '2026-08-20', label: 'Vasaras €57 Pamata' },
-  '53236774568202': { courses: [190, 196, 159, 192, 172, 154, 164, 160, 165], expires: '2026-10-07', label: 'Vasaras €97 Pro' },
+  // Pamata: visi kursi uzreiz
+  '53236774535434': { label: 'Vasaras €57 Pamata', expires: '2026-08-20', courses: [190, 196, 159] },
+
+  // Pro: pakāpeniski (drip). delayDays = pēc cik dienām pieslēgt šo grupu.
+  // ⚠️ PIELĀGO grupas un dienas pēc saviem ieskatiem.
+  '53236774568202': {
+    label: 'Vasaras €97 Pro', expires: '2026-10-07',
+    drip: [
+      { delayDays: 0, courses: [190, 196, 159] }, // uzreiz
+      { delayDays: 1, courses: [192, 172, 154] }, // pēc 1 dienas
+      { delayDays: 2, courses: [164, 160, 165] }, // pēc 2 dienām
+    ],
+  },
   // Pievieno citus produktus šeit
 };
 
@@ -59,27 +74,29 @@ const log = (...a) => console.log(`[${new Date().toISOString()}]`, ...a);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // --------------------------------------------------------------------------
-// Gaidīšanas rinda (pending) — neregistrētiem klientiem
+// Darbu rinda (jobs) — apvieno: drip grafiku (runAt nākotnē) UN neregistrētu retry.
+// Katrs job: { email, courses, expires, runAt, source, createdAt, attempts }
+// runAt = laiks (ms), kad job jāizpilda. Worker periodiski apstrādā "due" darbus.
 // PIEZĪME: Railway failu sistēma ir īslaicīga (pazūd pie redeploy). Noturīgai
 // rindai iestati Railway Volume un norādi QUEUE_FILE uz to, vai pārej uz Supabase.
 // --------------------------------------------------------------------------
-function loadPending() {
+function loadJobs() {
   try { return JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8')); } catch { return []; }
 }
-function savePending(list) {
+function saveJobs(list) {
   try { fs.writeFileSync(QUEUE_FILE, JSON.stringify(list, null, 2)); }
-  catch (e) { log('Nevar saglabāt pending:', e.message); }
+  catch (e) { log('Nevar saglabāt jobs:', e.message); }
 }
-function addPending(entry) {
-  const list = loadPending();
-  // viens ieraksts uz (email + courses signāls) — neveidot dublikātus
-  const key = `${entry.email}|${entry.courses.join(',')}`;
-  if (list.some((x) => `${x.email}|${x.courses.join(',')}` === key)) {
-    log('Pending jau eksistē:', key); return;
+function addJob(entry) {
+  const list = loadJobs();
+  const key = `${entry.email}|${entry.courses.join(',')}|${entry.runAt}`;
+  if (list.some((x) => `${x.email}|${x.courses.join(',')}|${x.runAt}` === key)) {
+    log('Job jau eksistē:', key); return;
   }
-  list.push({ ...entry, createdAt: Date.now(), attempts: 0 });
-  savePending(list);
-  log('Pievienots pending rindai:', entry.email, entry.courses);
+  list.push({ id: Math.random().toString(36).slice(2, 9), createdAt: Date.now(), attempts: 0, ...entry });
+  saveJobs(list);
+  const inDays = Math.max(0, (entry.runAt - Date.now()) / 86400000);
+  log(`Job rindā: ${entry.email} kursi [${entry.courses}] — palaist pēc ~${inDays.toFixed(1)}d (${entry.source})`);
 }
 
 // --------------------------------------------------------------------------
@@ -275,14 +292,84 @@ async function fillCourse(page, courseId, expiresDate) {
   return state;
 }
 
+/** Maina jau pieslēgta kursa expiry: Courses tabula -> ieķeksē rindu -> action "Change Expire". */
+async function changeExpiry(page, clientId, courseId, newExpires) {
+  if (EXPIRY_POLICY === 'skip') {
+    log(`  Kurss #${courseId} jau ir — politika 'skip', expiry nemainu`);
+    return { kept: true };
+  }
+  // svaiga lapa, lai nav palicis "add" modāļa stale DOM (citādi expires_at trāpa nepareizo lauku)
+  await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
+  await wait(2000);
+
+  // ieķeksē kursa rindu (checkbox ir tikai "Courses" tabulā)
+  const checked = await page.evaluate((id) => {
+    const cb = document.querySelector(`[dusk="${id}-checkbox"] input, [dusk="${id}-checkbox"]`);
+    if (cb) { cb.click(); return true; }
+    return false;
+  }, courseId);
+  if (!checked) throw new Error(`Nevar ieķeksēt kursa #${courseId} rindu (Change Expire)`);
+  await wait(1000);
+
+  // izvēlas "Change Expire" darbību action-select dropdownā
+  const ok = await page.evaluate(() => {
+    const selects = [...document.querySelectorAll('select[dusk="action-select"]')];
+    const s = selects.find((sel) => [...sel.options].some((o) => o.value === 'change-expire-access-client-to-course'));
+    if (!s) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(s, 'change-expire-access-client-to-course');
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  });
+  if (!ok) throw new Error('Nav "Change Expire" darbības');
+  await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
+  await wait(2000);
+
+  const current = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('[dusk="expires_at"]')].find((e) => e.offsetParent !== null);
+    return el ? el.value : '';
+  });
+  const newDt = `${newExpires}T00:00`;
+
+  // extend-only: ja esošais ir vēlāks vai vienāds — neko nemaina
+  if (EXPIRY_POLICY === 'extend' && current && new Date(current) >= new Date(newDt)) {
+    log(`  Kurss #${courseId}: esošais expiry ${current} >= jaunais ${newDt} — atstāju (extend-only)`);
+    await page.click('[dusk="cancel-action-button"]').catch(() => {});
+    await wait(500);
+    return { kept: true, current };
+  }
+
+  await page.evaluate((val) => {
+    const inp = [...document.querySelectorAll('[dusk="expires_at"]')].find((e) => e.offsetParent !== null) || document.querySelector('[dusk="expires_at"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(inp, val);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    inp.dispatchEvent(new Event('blur', { bubbles: true }));
+  }, newDt);
+  await wait(400);
+
+  if (DRY_RUN) {
+    log(`  [DRY_RUN] Change Expire #${courseId} -> ${newDt} (neizpildu)`);
+    await page.click('[dusk="cancel-action-button"]').catch(() => {});
+    return { dryRun: true };
+  }
+
+  await page.click('[dusk="confirm-action-button"]');
+  await page.waitForFunction(() => !document.querySelector('[dusk="modal-backdrop"]'), { timeout: 15000 }).catch(() => {});
+  await wait(1200);
+  log(`  Kurss #${courseId}: expiry atjaunināts ${current || '—'} -> ${newDt}`);
+  return { updated: true, from: current, to: newDt };
+}
+
 /** Pievieno VIENU kursu (viens action modālis = viens kurss). */
 async function addOneCourse(page, clientId, courseId, expiresDate) {
   await openAddCourseModal(page, clientId);
   const filled = await fillCourse(page, courseId, expiresDate);
 
   if (filled && filled.alreadyHas) {
-    log(`  Kurss #${courseId} jau ir klientam — izlaižu`);
-    return { skipped: 'already_has' };
+    log(`  Kurss #${courseId} jau ir klientam — pārbaudu/atjauninu expiry (politika: ${EXPIRY_POLICY})`);
+    return await changeExpiry(page, clientId, courseId, expiresDate);
   }
 
   if (DRY_RUN) {
@@ -321,11 +408,13 @@ async function addCoursesToClient(email, courseIds, expiresDate) {
 // --------------------------------------------------------------------------
 // Pasūtījuma apstrāde
 // --------------------------------------------------------------------------
+const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
+
 async function processCourses(email, courses, expires, source) {
   try {
     const res = await addCoursesToClient(email, courses, expires);
     if (res.registered === false) {
-      addPending({ email, courses, expires, source });
+      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS });
       await notifyAdmin(`⏳ ${email} vēl nav Nova — gaida rindā (${source}).`);
       return res;
     }
@@ -334,10 +423,16 @@ async function processCourses(email, courses, expires, source) {
   } catch (err) {
     log('KĻŪDA apstrādājot', email, ':', err.message);
     await notifyAdmin(`❌ ${email} kļūda: ${err.message}`);
-    // ja kļūda nav "nav reģistrējies", tomēr ieliek pending, lai mēģinātu vēlreiz
-    addPending({ email, courses, expires, source: `${source} (retry pēc kļūdas)` });
+    // kļūda — mēģina vēlreiz vēlāk
+    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS });
     return { error: err.message };
   }
+}
+
+/** Sadala produkta kursus grupās (drip vai viss uzreiz): [{delayDays, courses}]. */
+function productGroups(mapping) {
+  if (Array.isArray(mapping.drip) && mapping.drip.length) return mapping.drip;
+  return [{ delayDays: 0, courses: mapping.courses || [] }];
 }
 
 function processOrder(order) {
@@ -349,45 +444,70 @@ function processOrder(order) {
     const variantId = String(item.variant_id);
     const mapping = PRODUCT_COURSE_MAP[variantId];
     if (!mapping) { log(`Variant ${variantId} nav kartē — izlaižam`); continue; }
-    log(`Pasūtījums ${email}: ${mapping.label} (variant ${variantId}) -> kursi ${mapping.courses}`);
-    // async, nebloķē webhook atbildi
-    processCourses(email, mapping.courses, mapping.expires, `Shopify ${mapping.label}`);
+
+    for (const g of productGroups(mapping)) {
+      if (!g.courses || !g.courses.length) continue;
+      const src = `Shopify ${mapping.label}${g.delayDays ? ` +${g.delayDays}d` : ''}`;
+      if (g.delayDays > 0) {
+        // pakāpeniski — ieliek rindā ar aizkavi
+        addJob({ email, courses: g.courses, expires: mapping.expires, source: src, runAt: Date.now() + g.delayDays * 86400000 });
+      } else {
+        // uzreiz (async, nebloķē webhook atbildi)
+        log(`Pasūtījums ${email}: ${src} -> kursi ${g.courses}`);
+        processCourses(email, g.courses, mapping.expires, src);
+      }
+    }
   }
 }
 
 // --------------------------------------------------------------------------
-// Pending retry worker
+// Jobs worker — apstrādā "due" darbus (drip grafiks + neregistrētu retry)
 // --------------------------------------------------------------------------
-async function runRetryCycle() {
-  const list = loadPending();
-  if (!list.length) return;
-  log(`Retry cikls: ${list.length} pending klienti`);
-  const keep = [];
-  for (const entry of list) {
-    const ageDays = (Date.now() - entry.createdAt) / 86400000;
-    if (ageDays > PENDING_MAX_DAYS) {
-      log(`Pending novecojis (>${PENDING_MAX_DAYS}d), izņem: ${entry.email}`);
-      await notifyAdmin(`⚠️ Padodos: ${entry.email} ${PENDING_MAX_DAYS} dienas nav reģistrējies (kursi ${entry.courses.join(', ')}).`);
-      continue;
-    }
-    try {
-      const res = await addCoursesToClient(entry.email, entry.courses, entry.expires);
-      if (res.registered === false) {
-        entry.attempts = (entry.attempts || 0) + 1;
-        entry.lastTry = Date.now();
-        keep.push(entry); // vēl nav reģistrējies — paliek rindā
-      } else {
-        log(`Pending atrisināts: ${entry.email}`);
-        await notifyAdmin(`✅ (vēlāk) ${entry.email}: pieslēgti kursi ${entry.courses.join(', ')}.`);
+let jobsCycleRunning = false;
+async function runJobsCycle() {
+  if (jobsCycleRunning) return; // nepārklājas
+  jobsCycleRunning = true;
+  try {
+    const list = loadJobs();
+    const now = Date.now();
+    const due = list.filter((j) => (j.runAt || 0) <= now);
+    if (!due.length) return;
+    log(`Jobs cikls: ${due.length}/${list.length} darbi gatavi`);
+    const resolvedIds = new Set();
+
+    for (const job of due) {
+      const ageDays = (now - job.createdAt) / 86400000;
+      if (ageDays > PENDING_MAX_DAYS) {
+        log(`Job novecojis (>${PENDING_MAX_DAYS}d), izņem: ${job.email} [${job.courses}]`);
+        await notifyAdmin(`⚠️ Padodos: ${job.email} ${PENDING_MAX_DAYS} dienas nav reģistrējies (kursi ${job.courses.join(', ')}).`);
+        resolvedIds.add(job.id);
+        continue;
       }
-    } catch (e) {
-      log('Retry kļūda', entry.email, e.message);
-      entry.attempts = (entry.attempts || 0) + 1;
-      entry.lastTry = Date.now();
-      keep.push(entry);
+      try {
+        const res = await addCoursesToClient(job.email, job.courses, job.expires);
+        if (res.registered === false) {
+          job.attempts = (job.attempts || 0) + 1;
+          job.runAt = now + RETRY_MS; // vēl nav reģistrējies — mēģina vēlāk
+        } else {
+          log(`Job izpildīts: ${job.email} [${job.courses}]`);
+          await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
+          resolvedIds.add(job.id);
+        }
+      } catch (e) {
+        log('Job kļūda', job.email, e.message);
+        job.attempts = (job.attempts || 0) + 1;
+        job.runAt = now + RETRY_MS;
+      }
     }
+
+    // saglabā: izņem atrisinātos (pārējie ar atjauninātu runAt paliek)
+    saveJobs(loadJobs().filter((j) => !resolvedIds.has(j.id)).map((j) => {
+      const upd = due.find((d) => d.id === j.id);
+      return upd ? { ...j, attempts: upd.attempts, runAt: upd.runAt } : j;
+    }));
+  } finally {
+    jobsCycleRunning = false;
   }
-  savePending(keep);
 }
 
 // --------------------------------------------------------------------------
@@ -414,20 +534,28 @@ app.post('/webhook/shopify', (req, res) => {
 });
 
 // Manuāls pieslēgums (piem. otrs pirkums vēlāk, vai testam):
-// POST /add  { "email": "...", "courses": [190,196], "expires": "2026-08-20" }
+// POST /add  { "email": "...", "courses": [190,196], "expires": "2026-08-20", "delayDays": 0 }
+// delayDays > 0 -> ieliek rindā ar aizkavi (manuāls drip).
 app.post('/add', async (req, res) => {
-  const { email, courses, expires } = req.body || {};
+  const { email, courses, expires, delayDays } = req.body || {};
   if (!email || !Array.isArray(courses) || !expires) return res.status(400).json({ error: 'vajag email, courses[], expires' });
+  const d = Number(delayDays) || 0;
+  if (d > 0) {
+    addJob({ email: email.toLowerCase(), courses, expires, source: `manuāls /add +${d}d`, runAt: Date.now() + d * 86400000 });
+    return res.json({ scheduled: true, delayDays: d });
+  }
   const result = await processCourses(email.toLowerCase(), courses, expires, 'manuāls /add');
   res.json(result);
 });
 
-app.get('/pending', (_req, res) => res.json(loadPending()));
-app.get('/', (_req, res) => res.send(`Nova Bot darbojas! ${DRY_RUN ? '(DRY_RUN)' : ''} | pending: ${loadPending().length}`));
+app.get('/jobs', (_req, res) => res.json(loadJobs()));
+app.get('/pending', (_req, res) => res.json(loadJobs())); // saderībai
+app.get('/', (_req, res) => res.send(`Nova Bot darbojas! ${DRY_RUN ? '(DRY_RUN)' : ''} | jobs: ${loadJobs().length}`));
 
 app.listen(PORT, () => {
-  log(`Nova Bot serveris uz porta ${PORT}${DRY_RUN ? ' [DRY_RUN]' : ''}`);
+  log(`Nova Bot serveris uz porta ${PORT}${DRY_RUN ? ' [DRY_RUN]' : ''} | expiry politika: ${EXPIRY_POLICY}`);
   if (!NOVA_EMAIL || !NOVA_PASSWORD) log('BRĪDINĀJUMS: nav NOVA_EMAIL / NOVA_PASSWORD env!');
-  // periodisks retry
-  setInterval(() => runRetryCycle().catch((e) => log('Retry cikla kļūda:', e.message)), RETRY_INTERVAL_MIN * 60 * 1000);
+  // periodisks worker (drip grafiks + retry)
+  setInterval(() => runJobsCycle().catch((e) => log('Jobs cikla kļūda:', e.message)), RETRY_INTERVAL_MIN * 60 * 1000);
+  setTimeout(() => runJobsCycle().catch(() => {}), 15000); // viens cikls drīz pēc starta
 });
