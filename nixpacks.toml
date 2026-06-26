@@ -1,8 +1,9 @@
 # Railway / Nixpacks — sistēmas bibliotēkas puppeteer Chromium darbībai.
 # Bez tām bots krīt ar "error while loading shared libraries".
 [phases.setup]
+# Ubuntu 24.04 (Noble): vairākas libs ieguva "t64" sufiksu (64-bit time_t pāreja).
 aptPkgs = [
-  "libnss3", "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libdrm2",
+  "libnss3", "libatk1.0-0t64", "libatk-bridge2.0-0t64", "libcups2t64", "libdrm2",
   "libxkbcommon0", "libxcomposite1", "libxdamage1", "libxfixes3", "libxrandr2",
-  "libgbm1", "libpango-1.0-0", "libcairo2", "libasound2", "libatspi2.0-0", "fonts-liberation"
+  "libgbm1", "libpango-1.0-0", "libcairo2", "libasound2t64", "libatspi2.0-0t64", "fonts-liberation"
 ]
