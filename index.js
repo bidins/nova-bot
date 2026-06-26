@@ -227,13 +227,28 @@ async function selectCourseOption(page, courseId, title) {
   return null;
 }
 
-/** Izvēlas kursu modālī pēc ID (caur nosaukumu) un iestata expires. */
+/** Pārbauda, vai klientam jau ir kurss (detail lapas kursu tabulās). */
+async function clientHasCourse(page, title) {
+  return page.evaluate((t) => {
+    const tables = [...document.querySelectorAll('[dusk^="courses-index-component"], [dusk="resource-table"]')];
+    return tables.some((tb) => tb.textContent.includes(t));
+  }, title);
+}
+
+/** Izvēlas kursu modālī pēc ID (caur nosaukumu) un iestata expires.
+ *  Atgriež {alreadyHas:true}, ja kurss jau pievienots klientam (nav dropdown, bet ir tabulā). */
 async function fillCourse(page, courseId, expiresDate) {
   const title = COURSE_TITLES[courseId];
   if (!title) throw new Error(`Nav nosaukuma kursam #${courseId} (papildini courses-map.json)`);
 
   const picked = await selectCourseOption(page, courseId, title);
-  if (!picked) throw new Error(`Kurss #${courseId} ("${title}") nav atrodams dropdown`);
+  if (!picked) {
+    // kurss nav dropdown — varbūt jau pievienots klientam (tad Nova to izslēdz)
+    await page.click('[dusk="cancel-action-button"]').catch(() => {});
+    await wait(800);
+    if (await clientHasCourse(page, title)) return { alreadyHas: true };
+    throw new Error(`Kurss #${courseId} ("${title}") nav atrodams dropdown`);
+  }
   log(`  Izvēlēts: ${picked}`);
   await wait(800);
 
@@ -263,7 +278,12 @@ async function fillCourse(page, courseId, expiresDate) {
 /** Pievieno VIENU kursu (viens action modālis = viens kurss). */
 async function addOneCourse(page, clientId, courseId, expiresDate) {
   await openAddCourseModal(page, clientId);
-  await fillCourse(page, courseId, expiresDate);
+  const filled = await fillCourse(page, courseId, expiresDate);
+
+  if (filled && filled.alreadyHas) {
+    log(`  Kurss #${courseId} jau ir klientam — izlaižu`);
+    return { skipped: 'already_has' };
+  }
 
   if (DRY_RUN) {
     log(`  [DRY_RUN] NEklikšķinu Run Action kursam #${courseId}`);
