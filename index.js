@@ -544,8 +544,9 @@ app.post('/add', async (req, res) => {
     addJob({ email: email.toLowerCase(), courses, expires, source: `manuāls /add +${d}d`, runAt: Date.now() + d * 86400000 });
     return res.json({ scheduled: true, delayDays: d });
   }
-  const result = await processCourses(email.toLowerCase(), courses, expires, 'manuāls /add');
-  res.json(result);
+  // tūlītējs — atbild uzreiz, apstrādā fonā (citādi Railway HTTP proxy taimauts ~30s)
+  res.status(202).json({ accepted: true, email: email.toLowerCase(), courses });
+  processCourses(email.toLowerCase(), courses, expires, 'manuāls /add').catch((e) => log('/add fona kļūda:', e.message));
 });
 
 app.get('/jobs', (_req, res) => res.json(loadJobs()));
