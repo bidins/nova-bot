@@ -82,6 +82,12 @@ const PRODUCT_COURSE_MAP = {
     ],
   },
 
+  // Movement / Kustību Pamata (€45): visi uzreiz, 90 dienas
+  '53241392038154': { label: 'Movement Pamata €45', expiresDays: 90, courses: [172, 154, 164, 160, 165] },
+
+  // Movement / Kustību Pro (€78): tie paši kursi, uzreiz, 180 dienas
+  '53241394037002': { label: 'Movement Pro €78', expiresDays: 180, courses: [172, 154, 164, 160, 165] },
+
   // Pievieno citus produktus šeit
 };
 
