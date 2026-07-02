@@ -37,6 +37,10 @@ const PORT = process.env.PORT || 3000;
 const DRY_RUN = process.env.DRY_RUN === '1'; // ja 1 — neklikšķina "Run Action" (drošs tests)
 // Ko darīt, ja kurss klientam JAU ir pievienots: 'extend' (tikai pagarināt), 'overwrite' (vienmēr jaunais), 'skip' (neko)
 const EXPIRY_POLICY = process.env.EXPIRY_POLICY || 'extend';
+// Kuras pircēja valodas apstrādāt (customer_locale). Noklusējums tikai 'lv'.
+// Variant ID ir vienāds visās valodās, tāpēc filtrs pēc valodas neļauj EN/LT pircējiem
+// saņemt LV kursus. Tukšs = apstrādā visas valodas.
+const ALLOWED_LOCALES = (process.env.ALLOWED_LOCALES ?? 'lv').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || ''; // ja tukšs — HMAC netiek pārbaudīts
 const RETRY_INTERVAL_MIN = Number(process.env.RETRY_INTERVAL_MIN || 30); // cik bieži pārbaudīt pending
 const PENDING_MAX_DAYS = Number(process.env.PENDING_MAX_DAYS || 30); // cik ilgi turēt pending pirms padodas
@@ -46,17 +50,16 @@ const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'jobs.json');
 // Variants A (vienkāršs): { courses: [...], expires, label } — visi kursi uzreiz.
 // Variants B (drip): { drip: [{delayDays, courses}, ...], expires, label } — pakāpeniski.
 const PRODUCT_COURSE_MAP = {
-  // Pamata: visi kursi uzreiz
-  '53236774535434': { label: 'Vasaras €57 Pamata', expires: '2026-08-20', courses: [190, 196, 159] },
+  // Summer — Vasaras (€57): visi uzreiz, līdz 2026-08-20
+  '53236774535434': { label: 'Vasaras €57', expires: '2026-08-20', courses: [190, 196, 159] },
 
-  // Pro: pakāpeniski (drip). delayDays = pēc cik dienām pieslēgt šo grupu.
-  // ⚠️ PIELĀGO grupas un dienas pēc saviem ieskatiem.
+  // Summer — Vasaras + Uztura (€97): drip, līdz 2026-10-07
   '53236774568202': {
-    label: 'Vasaras €97 Pro', expires: '2026-10-07',
+    label: 'Vasaras + Uztura €97', expires: '2026-10-07',
     drip: [
-      { delayDays: 0, courses: [190, 196, 159] }, // uzreiz
-      { delayDays: 1, courses: [192, 172, 154] }, // pēc 1 dienas
-      { delayDays: 2, courses: [164, 160, 165] }, // pēc 2 dienām
+      { delayDays: 0, courses: [190, 196, 159] },            // uzreiz
+      { delayDays: 2, courses: [192] },                       // pēc 2 dienām
+      { delayDays: 3, courses: [172, 154, 164, 160, 165] },   // pēc 3 dienām (vēl pēc dienas)
     ],
   },
   // Pievieno citus produktus šeit
@@ -439,6 +442,14 @@ function processOrder(order) {
   const email = (order.email || order.contact_email || '').trim().toLowerCase();
   const lineItems = order.line_items || [];
   if (!email) { log('Pasūtījumam nav e-pasta — izlaižam'); return; }
+
+  // valodas filtrs — apstrādā tikai atļautās valodas (noklusējums LV)
+  const locale = (order.customer_locale || order.locale || '').toLowerCase();
+  if (ALLOWED_LOCALES.length && !ALLOWED_LOCALES.some((l) => locale.startsWith(l))) {
+    log(`Pasūtījums ${email} valodā "${locale || 'nezināma'}" — nav atļauto (${ALLOWED_LOCALES.join('/')}), izlaižam`);
+    notifyAdmin(`⏭️ ${email}: pasūtījums valodā "${locale || '?'}" izlaists (bots apstrādā tikai ${ALLOWED_LOCALES.join('/')}).`);
+    return;
+  }
 
   for (const item of lineItems) {
     const variantId = String(item.variant_id);
