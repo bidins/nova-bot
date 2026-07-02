@@ -62,6 +62,26 @@ const PRODUCT_COURSE_MAP = {
       { delayDays: 3, courses: [172, 154, 164, 160, 165] },   // pēc 3 dienām (vēl pēc dienas)
     ],
   },
+  // Sieviešu projekts (€97): 90 dienu piekļuve, drip
+  '53201415864586': {
+    label: "Sieviešu €97", expiresDays: 90,
+    drip: [
+      { delayDays: 0, courses: [190, 196, 192] },            // uzreiz
+      { delayDays: 1, courses: [159] },                       // pēc 1 dienas
+      { delayDays: 2, courses: [172, 154, 164, 160, 165] },   // pēc 2 dienām (pārējie 5)
+    ],
+  },
+
+  // Vīriešu projekts (€97): 90 dienu piekļuve, drip (tāds pats kā sieviešu)
+  '53201758912778': {
+    label: "Vīriešu €97", expiresDays: 90,
+    drip: [
+      { delayDays: 0, courses: [190, 196, 192] },
+      { delayDays: 1, courses: [159] },
+      { delayDays: 2, courses: [172, 154, 164, 160, 165] },
+    ],
+  },
+
   // Pievieno citus produktus šeit
 };
 
@@ -438,6 +458,12 @@ function productGroups(mapping) {
   return [{ delayDays: 0, courses: mapping.courses || [] }];
 }
 
+/** Nosaka beigu datumu: relatīvs (expiresDays no šodienas) vai fiksēts (expires). */
+function resolveExpires(mapping) {
+  if (mapping.expiresDays) return new Date(Date.now() + mapping.expiresDays * 86400000).toISOString().slice(0, 10);
+  return mapping.expires;
+}
+
 function processOrder(order) {
   const email = (order.email || order.contact_email || '').trim().toLowerCase();
   const lineItems = order.line_items || [];
@@ -456,16 +482,19 @@ function processOrder(order) {
     const mapping = PRODUCT_COURSE_MAP[variantId];
     if (!mapping) { log(`Variant ${variantId} nav kartē — izlaižam`); continue; }
 
+    // beigu datums aprēķināts VIENREIZ pirkuma brīdī — visas grupas (arī drip) dabū to pašu
+    const expires = resolveExpires(mapping);
+
     for (const g of productGroups(mapping)) {
       if (!g.courses || !g.courses.length) continue;
       const src = `Shopify ${mapping.label}${g.delayDays ? ` +${g.delayDays}d` : ''}`;
       if (g.delayDays > 0) {
         // pakāpeniski — ieliek rindā ar aizkavi
-        addJob({ email, courses: g.courses, expires: mapping.expires, source: src, runAt: Date.now() + g.delayDays * 86400000 });
+        addJob({ email, courses: g.courses, expires, source: src, runAt: Date.now() + g.delayDays * 86400000 });
       } else {
         // uzreiz (async, nebloķē webhook atbildi)
-        log(`Pasūtījums ${email}: ${src} -> kursi ${g.courses}`);
-        processCourses(email, g.courses, mapping.expires, src);
+        log(`Pasūtījums ${email}: ${src} -> kursi ${g.courses} (līdz ${expires})`);
+        processCourses(email, g.courses, expires, src);
       }
     }
   }
