@@ -142,6 +142,21 @@ function addJob(entry) {
 // Paziņojumi (e-pasts / WhatsApp) — neobligāti, atkarīgi no env
 // --------------------------------------------------------------------------
 async function notifyEmail(to, subject, text, html) {
+  const from = process.env.SMTP_FROM || process.env.RESEND_FROM || process.env.SMTP_USER;
+
+  // Priekšroka Resend HTTP API (ports 443) — Railway bloķē izejošo SMTP (587) -> timeout.
+  if (process.env.RESEND_API_KEY) {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: [to], subject, text, html }),
+    });
+    if (!r.ok) throw new Error(`Resend API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    log('E-pasts nosūtīts (Resend API):', to, '-', subject);
+    return true;
+  }
+
+  // Rezerves variants: SMTP (nodemailer)
   if (!process.env.SMTP_HOST) return false;
   const nodemailer = require('nodemailer');
   const t = nodemailer.createTransport({
@@ -150,8 +165,8 @@ async function notifyEmail(to, subject, text, html) {
     secure: process.env.SMTP_SECURE === '1',
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
   });
-  await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text, html });
-  log('E-pasts nosūtīts:', to, '-', subject);
+  await t.sendMail({ from, to, subject, text, html });
+  log('E-pasts nosūtīts (SMTP):', to, '-', subject);
   return true;
 }
 
