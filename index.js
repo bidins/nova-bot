@@ -61,11 +61,11 @@ const IMG_CROP = '?width=600&height=300&crop=center'; // apgriež uz vidus daļu
 // Variants B (drip): { drip: [{delayDays, courses}, ...], expires, label } — pakāpeniski.
 const PRODUCT_COURSE_MAP = {
   // Summer — Vasaras (€57): visi uzreiz, līdz 2026-08-20
-  '53236774535434': { label: 'Vasaras €57', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expires: '2026-08-20', courses: [190, 196, 159] },
+  '53236774535434': { label: 'Vasaras €57', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras57', expires: '2026-08-20', courses: [190, 196, 159] },
 
   // Summer — Vasaras + Uztura (€97): drip, līdz 2026-10-07
   '53236774568202': {
-    label: 'Vasaras + Uztura €97', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expires: '2026-10-07',
+    label: 'Vasaras + Uztura €97', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras97', expires: '2026-10-07',
     drip: [
       { delayDays: 0, courses: [190, 196, 159] },            // uzreiz
       { delayDays: 2, courses: [192] },                       // pēc 2 dienām
@@ -561,8 +561,72 @@ async function addOneCourse(page, clientId, courseId, expiresDate) {
   return { success: true };
 }
 
+// --------------------------------------------------------------------------
+// Iekšējā Nova ziņa (pēc kursu pieslēgšanas) — sūta no admin profila caur "Create Message"
+// --------------------------------------------------------------------------
+/** Ziņas teksts pēc atslēgas + dzimuma. Atgriež {title, text} vai null. */
+function novaMessage(key, g) {
+  const izlemis = g === 'f' ? 'izlēmusi' : 'izlēmis'; // neitrāls -> vīr. dzimte
+  const iepazisties = `Jau tagad vari iepazīties ar ievada informāciju - savā profilā pie "Mani projekti" meklē "Svara projekts (vasaras)". Un ja rodas jautājumi, droši raksti te vai grupā :)
+
+Grupa/forums arī tev jau ir atvērts - droši piedalies diskusijās un uzdod jautājumus tur! To atradīsi tepat izvēlnē "Grupa/forums"
+
+Un pastāsti nedaudz arī par sevi - kāda ir pieredze ēšanas un tievēšanas jautājumos, ko sagaidi no šī projekta un kādi ir tavi galvenie mērķi?`;
+  const sakums = `Čau! Tu pieteicies Vasaras projektam, kurš sāksies 14. jūlijā ar sagatavošanās dienām (paredzētas 2 sagatavošanās dienas, bet vari ņemt mazāk/vairāk, ja nepieciešams).`;
+  if (key === 'vasaras57') {
+    return { title: 'Par projektu', text: `${sakums}\n\n${iepazisties}` };
+  }
+  if (key === 'vasaras97') {
+    return { title: 'Par projektu', text: `${sakums}\n\nJa neesi ${izlemis}, ar kuru projektu sākt, raksti - palīdzēšu izlemt :)\n\n${iepazisties}` };
+  }
+  return null;
+}
+
+/** Nolasa klienta vārdu caur Nova API (dzimumam). */
+async function getClientFirstName(page, clientId) {
+  return page.evaluate(async (id) => {
+    try {
+      const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+      const j = await r.json();
+      const f = (j.resource && j.resource.fields) || j.fields || [];
+      const x = f.find((y) => y.attribute === 'first_name');
+      return x ? x.value : null;
+    } catch { return null; }
+  }, clientId);
+}
+
+/** Izveido ziņu klientam Nova (Create Message forma). */
+async function createNovaMessage(page, clientId, title, text) {
+  await page.goto(`${NOVA_BASE}/resources/messages/new?viaResource=clients&viaResourceId=${clientId}&viaRelationship=messages&relationshipType=hasMany`, { waitUntil: 'networkidle2' });
+  await wait(2000);
+  await page.type('[dusk="title"]', title);
+  await page.type('[dusk="text"]', text);
+  await wait(400);
+  await page.click('[dusk="create-button"]');
+  await page.waitForFunction(() => /resources\/messages\/\d+/.test(location.href), { timeout: 12000 }).catch(() => {});
+  await wait(1000);
+}
+
+/** Sūta iekšējo Nova ziņu vienreiz (ja produktam ir welcomeMsg). */
+async function maybeSendNovaMessage(page, clientId, email, msgKey) {
+  if (!msgKey) return;
+  const st = loadState();
+  if (st[email] && st[email].msgSent) return; // jau nosūtīts
+  const first = await getClientFirstName(page, clientId);
+  const msg = novaMessage(msgKey, guessGender(first));
+  if (!msg) return;
+  if (DRY_RUN) { log(`  [DRY_RUN] Nova ziņa ${email} (${msgKey}, ${first || '?'})`); return; }
+  try {
+    await createNovaMessage(page, clientId, msg.title, msg.text);
+    const m = loadState(); m[email] = { ...(m[email] || {}), msgSent: true }; saveState(m);
+    log(`  Nova ziņa nosūtīta klientam ${email} (${msgKey})`);
+  } catch (e) {
+    log('  Nova ziņas kļūda', email, e.message);
+  }
+}
+
 /** Galvenā funkcija: pievieno visus kursus klientam. Atgriež statusu. */
-async function addCoursesToClient(email, courseIds, expiresDate) {
+async function addCoursesToClient(email, courseIds, expiresDate, meta = {}) {
   return withBrowser(async (page) => {
     await login(page);
     const clientId = await findClientId(page, email);
@@ -576,6 +640,8 @@ async function addCoursesToClient(email, courseIds, expiresDate) {
       await addOneCourse(page, clientId, courseId, expiresDate);
       done.push(courseId);
     }
+    // iekšējā Nova ziņa (vienreiz, ja produktam definēta)
+    await maybeSendNovaMessage(page, clientId, email, meta.welcomeMsg);
     return { registered: true, clientId, done };
   });
 }
@@ -588,9 +654,9 @@ const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
 async function processCourses(email, courses, expires, source, meta = {}) {
   const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
   try {
-    const res = await addCoursesToClient(email, courses, expires);
+    const res = await addCoursesToClient(email, courses, expires, meta);
     if (res.registered === false) {
-      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage });
+      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg });
       await notifyAdmin(`⏳ ${email} vēl nav Nova — gaida rindā (${source}).`);
       await maybeRemindCustomer(ctx); // pirmais atgādinājums klientam uzreiz
       return res;
@@ -602,7 +668,7 @@ async function processCourses(email, courses, expires, source, meta = {}) {
     log('KĻŪDA apstrādājot', email, ':', err.message);
     await notifyAdmin(`❌ ${email} kļūda: ${err.message}`);
     // kļūda — mēģina vēlreiz vēlāk
-    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage });
+    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg });
     return { error: err.message };
   }
 }
@@ -644,7 +710,7 @@ function processOrder(order) {
 
     // beigu datums aprēķināts VIENREIZ pirkuma brīdī — visas grupas (arī drip) dabū to pašu
     const expires = resolveExpires(mapping);
-    const meta = { name, productTitle: mapping.title, productImage: mapping.image };
+    const meta = { name, productTitle: mapping.title, productImage: mapping.image, welcomeMsg: mapping.welcomeMsg };
 
     for (const g of productGroups(mapping)) {
       if (!g.courses || !g.courses.length) continue;
@@ -686,7 +752,7 @@ async function runJobsCycle() {
       }
       const ctx = { email: job.email, name: job.name, productTitle: job.productTitle, productImage: job.productImage };
       try {
-        const res = await addCoursesToClient(job.email, job.courses, job.expires);
+        const res = await addCoursesToClient(job.email, job.courses, job.expires, { welcomeMsg: job.welcomeMsg });
         if (res.registered === false) {
           job.attempts = (job.attempts || 0) + 1;
           job.runAt = now + RETRY_MS; // vēl nav reģistrējies — mēģina vēlāk
