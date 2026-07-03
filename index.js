@@ -42,6 +42,8 @@ const EXPIRY_POLICY = process.env.EXPIRY_POLICY || 'extend';
 // saņemt LV kursus. Tukšs = apstrādā visas valodas.
 const ALLOWED_LOCALES = (process.env.ALLOWED_LOCALES ?? 'lv').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || ''; // ja tukšs — HMAC netiek pārbaudīts
+const WEBHOOK_HMAC_ENFORCE = process.env.WEBHOOK_HMAC_ENFORCE === '1'; // ja 1 — noraida webhook ar sliktu HMAC (citādi tikai brīdina)
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''; // aizsargā /add un /jobs (header X-Admin-Token vai ?token=)
 const RETRY_INTERVAL_MIN = Number(process.env.RETRY_INTERVAL_MIN || 30); // cik bieži pārbaudīt pending
 const PENDING_MAX_DAYS = Number(process.env.PENDING_MAX_DAYS || 30); // cik ilgi turēt pending pirms padodas
 const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'jobs.json');
@@ -810,25 +812,43 @@ const app = express();
 app.use('/webhook/shopify', express.raw({ type: '*/*' }));
 app.use(express.json());
 
+/** Atgriež {ok, reason} — vai Shopify HMAC ir derīgs. */
 function verifyShopifyHmac(req) {
-  if (!SHOPIFY_WEBHOOK_SECRET) return true; // nav iestatīts — izlaiž pārbaudi
+  if (!SHOPIFY_WEBHOOK_SECRET) return { ok: true, reason: 'no-secret' };
   const hmac = req.get('X-Shopify-Hmac-Sha256') || '';
   const digest = crypto.createHmac('sha256', SHOPIFY_WEBHOOK_SECRET).update(req.body).digest('base64');
-  try { return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(digest)); } catch { return false; }
+  let match = false;
+  try { match = crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(digest)); } catch { match = false; }
+  return { ok: match, reason: match ? 'ok' : 'mismatch' };
+}
+
+/** Aizsargā admin endpointus ar ADMIN_TOKEN (header X-Admin-Token vai ?token=). */
+function requireAdmin(req, res) {
+  if (!ADMIN_TOKEN) return true; // ja nav iestatīts — atvērts (kamēr nekonfigurē)
+  const t = req.get('X-Admin-Token') || req.query.token || '';
+  if (t === ADMIN_TOKEN) return true;
+  res.status(403).json({ error: 'forbidden' });
+  return false;
 }
 
 app.post('/webhook/shopify', (req, res) => {
-  if (!verifyShopifyHmac(req)) { log('Nederīgs Shopify HMAC — noraidīts'); return res.status(401).send('bad hmac'); }
+  const v = verifyShopifyHmac(req);
+  if (!v.ok) {
+    log(`Shopify HMAC ${v.reason}${WEBHOOK_HMAC_ENFORCE ? ' — NORAIDĪTS' : ' — brīdinājums (enforce izslēgts)'}`);
+    if (WEBHOOK_HMAC_ENFORCE) return res.status(401).send('bad hmac');
+  } else if (SHOPIFY_WEBHOOK_SECRET) {
+    log('Shopify HMAC OK');
+  }
   res.status(200).send('OK'); // atbild uzreiz, apstrādā fonā
   let order;
   try { order = JSON.parse(req.body.toString('utf8')); } catch (e) { return log('Nederīgs JSON webhook:', e.message); }
   processOrder(order);
 });
 
-// Manuāls pieslēgums (piem. otrs pirkums vēlāk, vai testam):
+// Manuāls pieslēgums (aizsargāts ar ADMIN_TOKEN):
 // POST /add  { "email": "...", "courses": [190,196], "expires": "2026-08-20", "delayDays": 0 }
-// delayDays > 0 -> ieliek rindā ar aizkavi (manuāls drip).
 app.post('/add', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const { email, courses, expires, delayDays } = req.body || {};
   if (!email || !Array.isArray(courses) || !expires) return res.status(400).json({ error: 'vajag email, courses[], expires' });
   const d = Number(delayDays) || 0;
@@ -841,9 +861,9 @@ app.post('/add', async (req, res) => {
   processCourses(email.toLowerCase(), courses, expires, 'manuāls /add').catch((e) => log('/add fona kļūda:', e.message));
 });
 
-app.get('/jobs', (_req, res) => res.json(loadJobs()));
-app.get('/pending', (_req, res) => res.json(loadJobs())); // saderībai
-app.get('/', (_req, res) => res.send(`Nova Bot darbojas! ${DRY_RUN ? '(DRY_RUN)' : ''} | jobs: ${loadJobs().length}`));
+app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
+app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
+app.get('/', (_req, res) => res.send('Nova Bot darbojas!')); // health — bez datiem
 
 app.listen(PORT, () => {
   log(`Nova Bot serveris uz porta ${PORT}${DRY_RUN ? ' [DRY_RUN]' : ''} | expiry politika: ${EXPIRY_POLICY}`);
