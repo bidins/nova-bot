@@ -120,7 +120,17 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 // rindai iestati Railway Volume un norādi QUEUE_FILE uz to, vai pārej uz Supabase.
 // --------------------------------------------------------------------------
 function loadJobs() {
-  try { return JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8')); } catch { return []; }
+  try {
+    const list = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+    // dedup pēc email+courses (patur agrāko runAt) — tīra dublikātus no atkārtotas apstrādes
+    const seen = new Map();
+    for (const j of list) {
+      const k = `${j.email}|${(j.courses || []).join(',')}`;
+      const ex = seen.get(k);
+      if (!ex || (j.runAt || 0) < (ex.runAt || 0)) seen.set(k, j);
+    }
+    return [...seen.values()];
+  } catch { return []; }
 }
 function saveJobs(list) {
   try { fs.writeFileSync(QUEUE_FILE, JSON.stringify(list, null, 2)); }
@@ -128,9 +138,9 @@ function saveJobs(list) {
 }
 function addJob(entry) {
   const list = loadJobs();
-  const key = `${entry.email}|${entry.courses.join(',')}|${entry.runAt}`;
-  if (list.some((x) => `${x.email}|${x.courses.join(',')}|${x.runAt}` === key)) {
-    log('Job jau eksistē:', key); return;
+  const key = `${entry.email}|${entry.courses.join(',')}`;
+  if (list.some((x) => `${x.email}|${x.courses.join(',')}` === key)) {
+    log('Job jau eksistē (nedublēju):', key); return;
   }
   list.push({ id: Math.random().toString(36).slice(2, 9), createdAt: Date.now(), attempts: 0, ...entry });
   saveJobs(list);
