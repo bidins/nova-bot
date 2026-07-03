@@ -51,7 +51,7 @@ const REMINDER_ENABLED = process.env.REMINDER_ENABLED === '1'; // jāieslēdz ap
 const REMINDER_INTERVAL_HOURS = Number(process.env.REMINDER_INTERVAL_HOURS || 24); // cik bieži atgādināt vienam klientam
 const REMINDER_MAX = Number(process.env.REMINDER_MAX || 5); // cik atgādinājumus maksimāli vienam klientam
 const REGISTER_URL = process.env.REGISTER_URL || 'https://www.martinsbidins.com/lv/register';
-const COURSES_URL = process.env.COURSES_URL || 'https://www.martinsbidins.com/lv'; // "kursi pieslēgti" pogai
+const COURSES_URL = process.env.COURSES_URL || 'https://www.martinsbidins.com/lv/login'; // "kursi pieslēgti" pogai (klients ielogojas un redz kursus)
 const REMINDERS_FILE = process.env.REMINDERS_FILE || path.join(__dirname, 'reminders.json'); // stāvoklis: email -> {remLast, remCount, welcomed}
 const CDN_BASE = 'https://cdn.shopify.com/s/files/1/0943/1515/1626/files/'; // Shopify produktu attēli
 const IMG_CROP = '?width=600&height=300&crop=center'; // apgriež uz vidus daļu
