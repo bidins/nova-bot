@@ -427,6 +427,13 @@ async function clientHasCourse(page, courseId) {
   }, courseId);
 }
 
+/** Vai klientam jau ir KĀDS no dotajiem kursiem (klienta detail lapā). */
+async function clientHasAnyCourse(page, courseIds) {
+  return page.evaluate((ids) => ids.some((id) =>
+    !!document.querySelector(`[dusk="${id}-row"]`) || !!document.querySelector(`a[href*="/resources/courses/${id}"]`)
+  ), courseIds);
+}
+
 /** Izvēlas kursu modālī pēc ID (caur nosaukumu) un iestata expires.
  *  Atgriež {alreadyHas:true}, ja kurss jau pievienots klientam (nav dropdown, bet ir tabulā). */
 async function fillCourse(page, courseId, expiresDate) {
@@ -625,8 +632,9 @@ async function maybeSendNovaMessage(page, clientId, email, msgKey) {
   }
 }
 
-/** Galvenā funkcija: pievieno visus kursus klientam. Atgriež statusu. */
-async function addCoursesToClient(email, courseIds, expiresDate, meta = {}) {
+/** Galvenā funkcija: pievieno kursus klientam. Atgriež statusu.
+ *  opts.extraCourses: ja klientam JAU ir kāds kurss -> pieslēdz arī šos uzreiz (flatten drip). */
+async function addCoursesToClient(email, courseIds, expiresDate, meta = {}, opts = {}) {
   return withBrowser(async (page) => {
     await login(page);
     const clientId = await findClientId(page, email);
@@ -634,15 +642,26 @@ async function addCoursesToClient(email, courseIds, expiresDate, meta = {}) {
       log(`Klients NAV reģistrējies: ${email} — liek pending rindā`);
       return { registered: false };
     }
-    log(`Atrasts klients ${email} (ID ${clientId}) — pieslēdzu ${courseIds.length} kursus`);
+
+    let toConnect = courseIds;
+    let flattened = false;
+    if (opts.extraCourses && opts.extraCourses.length) {
+      // esošam klientam (jau ir kāds no kursiem) NEDRIPOjam — pieslēdzam visu uzreiz
+      await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
+      await wait(2500);
+      const all = [...courseIds, ...opts.extraCourses];
+      if (await clientHasAnyCourse(page, all)) { toConnect = all; flattened = true; }
+    }
+
+    log(`Atrasts klients ${email} (ID ${clientId}) — ${flattened ? 'JAU IR kurss → visu uzreiz,' : ''} pieslēdzu ${toConnect.length} kursus`);
     const done = [];
-    for (const courseId of courseIds) {
+    for (const courseId of toConnect) {
       await addOneCourse(page, clientId, courseId, expiresDate);
       done.push(courseId);
     }
     // iekšējā Nova ziņa (vienreiz, ja produktam definēta)
     await maybeSendNovaMessage(page, clientId, email, meta.welcomeMsg);
-    return { registered: true, clientId, done };
+    return { registered: true, clientId, done, flattened };
   });
 }
 
@@ -651,24 +670,32 @@ async function addCoursesToClient(email, courseIds, expiresDate, meta = {}) {
 // --------------------------------------------------------------------------
 const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
 
-async function processCourses(email, courses, expires, source, meta = {}) {
+async function processCourses(email, courses, expires, source, meta = {}, opts = {}) {
   const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
+  const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg };
+  // ieliek aizkavētās drip grupas rindā (jauniem klientiem)
+  const queueDelayed = () => (opts.delayedGroups || []).forEach((g) =>
+    addJob({ email, courses: g.courses, expires, source: `Shopify ${opts.label} +${g.delayDays}d`, runAt: Date.now() + g.delayDays * 86400000, ...jobMeta }));
   try {
-    const res = await addCoursesToClient(email, courses, expires, meta);
+    const res = await addCoursesToClient(email, courses, expires, meta, opts);
     if (res.registered === false) {
-      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg });
+      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS, ...jobMeta });
+      queueDelayed(); // nereģistrēts/jauns -> drip (aizkavētās grupas gaida rindā)
       await notifyAdmin(`⏳ ${email} vēl nav Nova — gaida rindā (${source}).`);
       await maybeRemindCustomer(ctx); // pirmais atgādinājums klientam uzreiz
       return res;
     }
-    await notifyAdmin(`✅ ${email}: pieslēgti kursi ${courses.join(', ')}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
+    const connected = (res.done && res.done.join(', ')) || courses.join(', ');
+    await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
     await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
+    if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
     return res;
   } catch (err) {
     log('KĻŪDA apstrādājot', email, ':', err.message);
     await notifyAdmin(`❌ ${email} kļūda: ${err.message}`);
-    // kļūda — mēģina vēlreiz vēlāk
-    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg });
+    // kļūda — mēģina vēlreiz vēlāk (arī aizkavētās, lai nepazūd)
+    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS, ...jobMeta });
+    queueDelayed();
     return { error: err.message };
   }
 }
@@ -711,19 +738,14 @@ function processOrder(order) {
     // beigu datums aprēķināts VIENREIZ pirkuma brīdī — visas grupas (arī drip) dabū to pašu
     const expires = resolveExpires(mapping);
     const meta = { name, productTitle: mapping.title, productImage: mapping.image, welcomeMsg: mapping.welcomeMsg };
+    const groups = productGroups(mapping);
+    const immediate = (groups.find((g) => (g.delayDays || 0) === 0) || { courses: [] }).courses;
+    const delayedGroups = groups.filter((g) => (g.delayDays || 0) > 0);
+    const extraCourses = delayedGroups.flatMap((g) => g.courses);
 
-    for (const g of productGroups(mapping)) {
-      if (!g.courses || !g.courses.length) continue;
-      const src = `Shopify ${mapping.label}${g.delayDays ? ` +${g.delayDays}d` : ''}`;
-      if (g.delayDays > 0) {
-        // pakāpeniski — ieliek rindā ar aizkavi
-        addJob({ email, courses: g.courses, expires, source: src, runAt: Date.now() + g.delayDays * 86400000, ...meta });
-      } else {
-        // uzreiz (async, nebloķē webhook atbildi)
-        log(`Pasūtījums ${email}: ${src} -> kursi ${g.courses} (līdz ${expires})`);
-        processCourses(email, g.courses, expires, src, meta);
-      }
-    }
+    log(`Pasūtījums ${email}: Shopify ${mapping.label} -> uzreiz ${immediate}${delayedGroups.length ? `, drip ${extraCourses}` : ''} (līdz ${expires})`);
+    // uzreiz apstrādā tūlītējo grupu; ja esošam klientam jau ir kāds kurss -> pieslēdz arī aizkavētās uzreiz (flatten)
+    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label });
   }
 }
 
