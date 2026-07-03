@@ -46,6 +46,13 @@ const RETRY_INTERVAL_MIN = Number(process.env.RETRY_INTERVAL_MIN || 30); // cik 
 const PENDING_MAX_DAYS = Number(process.env.PENDING_MAX_DAYS || 30); // cik ilgi turēt pending pirms padodas
 const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'jobs.json');
 
+// Klienta atgādinājumi (neregistrētiem pircējiem — "izveido kontu")
+const REMINDER_ENABLED = process.env.REMINDER_ENABLED === '1'; // jāieslēdz apzināti
+const REMINDER_INTERVAL_HOURS = Number(process.env.REMINDER_INTERVAL_HOURS || 24); // cik bieži atgādināt vienam klientam
+const REMINDER_MAX = Number(process.env.REMINDER_MAX || 5); // cik atgādinājumus maksimāli vienam klientam
+const REGISTER_URL = process.env.REGISTER_URL || 'https://www.martinsbidins.com';
+const REMINDERS_FILE = process.env.REMINDERS_FILE || path.join(__dirname, 'reminders.json'); // email -> {last, count}
+
 // Shopify variant ID -> kursi + beigu datums (YYYY-MM-DD).
 // Variants A (vienkāršs): { courses: [...], expires, label } — visi kursi uzreiz.
 // Variants B (drip): { drip: [{delayDays, courses}, ...], expires, label } — pakāpeniski.
@@ -132,7 +139,7 @@ function addJob(entry) {
 // Paziņojumi (e-pasts / WhatsApp) — neobligāti, atkarīgi no env
 // --------------------------------------------------------------------------
 async function notifyEmail(to, subject, text) {
-  if (!process.env.SMTP_HOST) return;
+  if (!process.env.SMTP_HOST) return false;
   const nodemailer = require('nodemailer');
   const t = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -142,6 +149,7 @@ async function notifyEmail(to, subject, text) {
   });
   await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text });
   log('E-pasts nosūtīts:', to, '-', subject);
+  return true;
 }
 
 async function notifyWhatsApp(text) {
@@ -159,6 +167,56 @@ async function notifyAdmin(text) {
   try { await notifyWhatsApp(text); } catch (e) { log('WhatsApp kļūda:', e.message); }
   try { if (process.env.ADMIN_EMAIL) await notifyEmail(process.env.ADMIN_EMAIL, 'Nova Bot', text); }
   catch (e) { log('E-pasta kļūda:', e.message); }
+}
+
+// --------------------------------------------------------------------------
+// Klienta atgādinājumi — neregistrētiem pircējiem "izveido kontu ar šo e-pastu"
+// Dedublē pēc e-pasta (reminders.json), lai nesūtītu katram job atsevišķi / pārāk bieži.
+// --------------------------------------------------------------------------
+function loadReminders() {
+  try { return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf8')); } catch { return {}; }
+}
+function saveReminders(map) {
+  try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(map, null, 2)); } catch (e) { log('Nevar saglabāt reminders:', e.message); }
+}
+
+function reminderText(email) {
+  return `Sveiki!
+
+Paldies par pirkumu martinsbidins.com! Lai saņemtu piekļuvi saviem kursiem, atliek viens solis:
+
+izveido kontu platformā ar TIEŠI ŠO e-pasta adresi: ${email}
+
+Reģistrējies šeit: ${REGISTER_URL}
+
+Tiklīdz būsi reģistrējies, kursi tavā profilā parādīsies automātiski (dažu minūšu laikā).
+
+Ja radušies jautājumi — atbildi uz šo e-pastu.
+Mārtiņš Bidiņš`;
+}
+
+/** Nosūta klientam atgādinājumu (ja ieslēgts, ievērojot intervālu un maks. skaitu). */
+async function maybeRemindCustomer(email) {
+  if (!REMINDER_ENABLED || !email) return;
+  const map = loadReminders();
+  const st = map[email] || { last: 0, count: 0 };
+  if (st.count >= REMINDER_MAX) return;
+  if (Date.now() - st.last < REMINDER_INTERVAL_HOURS * 3600 * 1000) return;
+  try {
+    const sent = await notifyEmail(email, 'Tavs pirkums — izveido kontu, lai saņemtu kursus 🙂', reminderText(email));
+    if (!sent) return; // SMTP nav konfigurēts — neatzīmē kā nosūtītu
+    map[email] = { last: Date.now(), count: st.count + 1 };
+    saveReminders(map);
+    log(`Atgādinājums nosūtīts klientam ${email} (#${st.count + 1})`);
+  } catch (e) {
+    log('Atgādinājuma kļūda', email, e.message);
+  }
+}
+
+/** Kad klients beidzot reģistrējies un kursi pieslēgti — notīra atgādinājumu stāvokli. */
+function clearReminder(email) {
+  const map = loadReminders();
+  if (map[email]) { delete map[email]; saveReminders(map); }
 }
 
 // --------------------------------------------------------------------------
@@ -445,6 +503,7 @@ async function processCourses(email, courses, expires, source) {
     if (res.registered === false) {
       addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS });
       await notifyAdmin(`⏳ ${email} vēl nav Nova — gaida rindā (${source}).`);
+      await maybeRemindCustomer(email); // pirmais atgādinājums klientam uzreiz
       return res;
     }
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${courses.join(', ')}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
@@ -534,9 +593,11 @@ async function runJobsCycle() {
         if (res.registered === false) {
           job.attempts = (job.attempts || 0) + 1;
           job.runAt = now + RETRY_MS; // vēl nav reģistrējies — mēģina vēlāk
+          await maybeRemindCustomer(job.email); // atgādina klientam izveidot kontu
         } else {
           log(`Job izpildīts: ${job.email} [${job.courses}]`);
           await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
+          clearReminder(job.email);
           resolvedIds.add(job.id);
         }
       } catch (e) {
