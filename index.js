@@ -50,19 +50,22 @@ const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'jobs.json');
 const REMINDER_ENABLED = process.env.REMINDER_ENABLED === '1'; // jāieslēdz apzināti
 const REMINDER_INTERVAL_HOURS = Number(process.env.REMINDER_INTERVAL_HOURS || 24); // cik bieži atgādināt vienam klientam
 const REMINDER_MAX = Number(process.env.REMINDER_MAX || 5); // cik atgādinājumus maksimāli vienam klientam
-const REGISTER_URL = process.env.REGISTER_URL || 'https://www.martinsbidins.com';
-const REMINDERS_FILE = process.env.REMINDERS_FILE || path.join(__dirname, 'reminders.json'); // email -> {last, count}
+const REGISTER_URL = process.env.REGISTER_URL || 'https://www.martinsbidins.com/lv/register';
+const COURSES_URL = process.env.COURSES_URL || 'https://www.martinsbidins.com/lv'; // "kursi pieslēgti" pogai
+const REMINDERS_FILE = process.env.REMINDERS_FILE || path.join(__dirname, 'reminders.json'); // stāvoklis: email -> {remLast, remCount, welcomed}
+const CDN_BASE = 'https://cdn.shopify.com/s/files/1/0943/1515/1626/files/'; // Shopify produktu attēli
+const IMG_CROP = '?width=600&height=300&crop=center'; // apgriež uz vidus daļu
 
 // Shopify variant ID -> kursi + beigu datums (YYYY-MM-DD).
 // Variants A (vienkāršs): { courses: [...], expires, label } — visi kursi uzreiz.
 // Variants B (drip): { drip: [{delayDays, courses}, ...], expires, label } — pakāpeniski.
 const PRODUCT_COURSE_MAP = {
   // Summer — Vasaras (€57): visi uzreiz, līdz 2026-08-20
-  '53236774535434': { label: 'Vasaras €57', expires: '2026-08-20', courses: [190, 196, 159] },
+  '53236774535434': { label: 'Vasaras €57', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expires: '2026-08-20', courses: [190, 196, 159] },
 
   // Summer — Vasaras + Uztura (€97): drip, līdz 2026-10-07
   '53236774568202': {
-    label: 'Vasaras + Uztura €97', expires: '2026-10-07',
+    label: 'Vasaras + Uztura €97', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expires: '2026-10-07',
     drip: [
       { delayDays: 0, courses: [190, 196, 159] },            // uzreiz
       { delayDays: 2, courses: [192] },                       // pēc 2 dienām
@@ -71,7 +74,7 @@ const PRODUCT_COURSE_MAP = {
   },
   // Sieviešu projekts (€97): 90 dienu piekļuve, drip
   '53201415864586': {
-    label: "Sieviešu €97", expiresDays: 90,
+    label: "Sieviešu €97", title: 'Sieviešu projekts', image: 'sieviesu-projekts.jpg', expiresDays: 90,
     drip: [
       { delayDays: 0, courses: [190, 196, 192] },            // uzreiz
       { delayDays: 1, courses: [159] },                       // pēc 1 dienas
@@ -81,7 +84,7 @@ const PRODUCT_COURSE_MAP = {
 
   // Vīriešu projekts (€97): 90 dienu piekļuve, drip (tāds pats kā sieviešu)
   '53201758912778': {
-    label: "Vīriešu €97", expiresDays: 90,
+    label: "Vīriešu €97", title: 'Vīriešu projekts', image: 'viriesu-projekts.jpg', expiresDays: 90,
     drip: [
       { delayDays: 0, courses: [190, 196, 192] },
       { delayDays: 1, courses: [159] },
@@ -90,10 +93,10 @@ const PRODUCT_COURSE_MAP = {
   },
 
   // Movement / Kustību Pamata (€45): visi uzreiz, 90 dienas
-  '53241392038154': { label: 'Movement Pamata €45', expiresDays: 90, courses: [172, 154, 164, 160, 165] },
+  '53241392038154': { label: 'Movement Pamata €45', title: 'Kustību projekts', image: 'kustibu-projekts.jpg', expiresDays: 90, courses: [172, 154, 164, 160, 165] },
 
   // Movement / Kustību Pro (€78): tie paši kursi, uzreiz, 180 dienas
-  '53241394037002': { label: 'Movement Pro €78', expiresDays: 180, courses: [172, 154, 164, 160, 165] },
+  '53241394037002': { label: 'Movement Pro €78', title: 'Kustību projekts', image: 'kustibu-projekts.jpg', expiresDays: 180, courses: [172, 154, 164, 160, 165] },
 
   // Pievieno citus produktus šeit
 };
@@ -138,7 +141,7 @@ function addJob(entry) {
 // --------------------------------------------------------------------------
 // Paziņojumi (e-pasts / WhatsApp) — neobligāti, atkarīgi no env
 // --------------------------------------------------------------------------
-async function notifyEmail(to, subject, text) {
+async function notifyEmail(to, subject, text, html) {
   if (!process.env.SMTP_HOST) return false;
   const nodemailer = require('nodemailer');
   const t = nodemailer.createTransport({
@@ -147,7 +150,7 @@ async function notifyEmail(to, subject, text) {
     secure: process.env.SMTP_SECURE === '1',
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
   });
-  await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text });
+  await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text, html });
   log('E-pasts nosūtīts:', to, '-', subject);
   return true;
 }
@@ -173,50 +176,108 @@ async function notifyAdmin(text) {
 // Klienta atgādinājumi — neregistrētiem pircējiem "izveido kontu ar šo e-pastu"
 // Dedublē pēc e-pasta (reminders.json), lai nesūtītu katram job atsevišķi / pārāk bieži.
 // --------------------------------------------------------------------------
-function loadReminders() {
+function loadState() {
   try { return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf8')); } catch { return {}; }
 }
-function saveReminders(map) {
-  try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(map, null, 2)); } catch (e) { log('Nevar saglabāt reminders:', e.message); }
+function saveState(map) {
+  try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(map, null, 2)); } catch (e) { log('Nevar saglabāt state:', e.message); }
 }
 
-function reminderText(email) {
-  return `Sveiki!
+/** Nosaka dzimumu pēc latviešu vārda: 'f' | 'm' | null (neskaidrs -> neitrāls). */
+function guessGender(name) {
+  const n = String(name || '').trim().toLowerCase().split(/\s+/)[0];
+  if (!n || n.length < 2) return null;
+  if (/[sš]$/.test(n)) return 'm';       // Mārtiņš, Jānis, Roberts, Kārlis
+  if (/[ae]$/.test(n)) return 'f';       // Ārija, Līga, Dace, Anete
+  return null;                            // neskaidrs -> neitrāls
+}
 
-Paldies par pirkumu martinsbidins.com! Lai saņemtu piekļuvi saviem kursiem, atliek viens solis:
+// Kopīgais e-pasta "rāmis" (header + attēls + footer) zīmola krāsās
+function emailShell(imageFile, altText, bodyHtml, ctaUrl) {
+  const img = imageFile ? `<tr><td style="padding:0;font-size:0;"><img src="${CDN_BASE}${imageFile}${IMG_CROP}" alt="${altText}" width="600" style="display:block;width:100%;height:auto;"></td></tr>` : '';
+  return `<!doctype html><html lang="lv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F3E7BE;font-family:Arial,Helvetica,sans-serif;color:#173A2C;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3E7BE;padding:24px 0;"><tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#F7F0DC;border-radius:14px;overflow:hidden;">
+<tr><td style="background:#173A2C;padding:22px 32px;text-align:center;"><span style="color:#F7F0DC;font-size:20px;font-weight:bold;letter-spacing:2px;">MĀRTIŅŠ BIDIŅŠ</span></td></tr>
+${img}
+<tr><td style="padding:32px 32px 8px 32px;">${bodyHtml}</td></tr>
+<tr><td style="padding:18px 32px;background:#173A2C;text-align:center;"><a href="${ctaUrl}" style="color:#DFBF52;font-size:13px;text-decoration:none;">martinsbidins.com</a></td></tr>
+</table></td></tr></table></body></html>`;
+}
 
-izveido kontu platformā ar TIEŠI ŠO e-pasta adresi: ${email}
+function ctaButton(url, label) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 22px auto;"><tr><td style="border-radius:8px;background:#C9781C;"><a href="${url}" style="display:inline-block;padding:14px 34px;font-size:16px;font-weight:bold;color:#F7F0DC;text-decoration:none;">${label}</a></td></tr></table>`;
+}
 
-Reģistrējies šeit: ${REGISTER_URL}
+// Atgādinājuma e-pasts (neregistrētam)
+function reminderEmail(ctx) {
+  const g = guessGender(ctx.name);
+  const greet = g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!';
+  const reg = g === 'f' ? 'reģistrējusies' : 'reģistrējies';
+  const title = ctx.productTitle || 'kursu';
+  const body = `<h1 style="margin:0 0 6px 0;font-size:22px;color:#173A2C;">${greet}</h1>
+<p style="margin:0 0 16px 0;font-size:16px;line-height:1.55;">Paldies par pirkumu - <strong>${title}</strong>. Lai saņemtu piekļuvi saviem kursiem, atliek <strong>viens solis</strong>:</p>
+<p style="margin:0 0 20px 0;font-size:16px;line-height:1.55;">Reģistrēties ar ŠO e-pasta adresi (<strong>${ctx.email}</strong>) šeit:</p>
+${ctaButton(REGISTER_URL, 'Reģistrēties →')}
+<p style="margin:0 0 16px 0;font-size:15px;line-height:1.55;color:#3a5a4a;">Tiklīdz būsi ${reg}, kursi tavā profilā parādīsies <strong>automātiski</strong> (30 min laikā).</p>
+<p style="margin:0 0 4px 0;font-size:15px;line-height:1.55;">Ja radušies jautājumi - vienkārši atbildi uz šo e-pastu.</p>
+<p style="margin:18px 0 0 0;font-size:15px;">Mārtiņš Bidiņš</p>`;
+  const text = `${greet}\n\nPaldies par pirkumu - ${title}. Lai saņemtu piekļuvi saviem kursiem, atliek viens solis:\n\nReģistrēties ar ŠO e-pasta adresi (${ctx.email}) šeit:\n${REGISTER_URL}\n\nTiklīdz būsi ${reg}, kursi parādīsies automātiski (30 min laikā).\n\nJa jautājumi - atbildi uz šo e-pastu.\nMārtiņš Bidiņš`;
+  return { subject: 'Tavs pirkums - reģistrējies, lai saņemtu kursus', text, html: emailShell(ctx.productImage, title, body, REGISTER_URL) };
+}
 
-Tiklīdz būsi reģistrējies, kursi tavā profilā parādīsies automātiski (dažu minūšu laikā).
-
-Ja radušies jautājumi — atbildi uz šo e-pastu.
-Mārtiņš Bidiņš`;
+// "Kursi pieslēgti" e-pasts
+function readyEmail(ctx) {
+  const g = guessGender(ctx.name);
+  const greet = g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!';
+  const body = `<h1 style="margin:0 0 14px 0;font-size:22px;color:#173A2C;">${greet}</h1>
+<p style="margin:0 0 14px 0;font-size:17px;line-height:1.55;">Kursi ir pieslēgti. ✅</p>
+<p style="margin:0 0 14px 0;font-size:16px;line-height:1.55;">Paldies.</p>
+<p style="margin:0 0 24px 0;font-size:16px;line-height:1.55;">Lūdzu, izlasi <strong>pamācību</strong> un vēstuli no manis.</p>
+${ctaButton(COURSES_URL, 'Uz maniem kursiem →')}
+<p style="margin:18px 0 0 0;font-size:15px;">Mārtiņš Bidiņš</p>`;
+  const text = `${greet}\n\nKursi ir pieslēgti.\n\nPaldies.\n\nLūdzu, izlasi pamācību un vēstuli no manis.\n\n${COURSES_URL}\n\nMārtiņš Bidiņš`;
+  return { subject: 'Kursi ir pieslēgti - vari sākt!', text, html: emailShell(ctx.productImage, ctx.productTitle || '', body, COURSES_URL) };
 }
 
 /** Nosūta klientam atgādinājumu (ja ieslēgts, ievērojot intervālu un maks. skaitu). */
-async function maybeRemindCustomer(email) {
-  if (!REMINDER_ENABLED || !email) return;
-  const map = loadReminders();
-  const st = map[email] || { last: 0, count: 0 };
-  if (st.count >= REMINDER_MAX) return;
-  if (Date.now() - st.last < REMINDER_INTERVAL_HOURS * 3600 * 1000) return;
+async function maybeRemindCustomer(ctx) {
+  if (DRY_RUN) return; // testa režīmā nesūta reāliem klientiem
+  if (!REMINDER_ENABLED || !ctx || !ctx.email) return;
+  const map = loadState();
+  const st = map[ctx.email] || {};
+  if ((st.remCount || 0) >= REMINDER_MAX) return;
+  if (Date.now() - (st.remLast || 0) < REMINDER_INTERVAL_HOURS * 3600 * 1000) return;
   try {
-    const sent = await notifyEmail(email, 'Tavs pirkums — izveido kontu, lai saņemtu kursus 🙂', reminderText(email));
+    const m = reminderEmail(ctx);
+    const sent = await notifyEmail(ctx.email, m.subject, m.text, m.html);
     if (!sent) return; // SMTP nav konfigurēts — neatzīmē kā nosūtītu
-    map[email] = { last: Date.now(), count: st.count + 1 };
-    saveReminders(map);
-    log(`Atgādinājums nosūtīts klientam ${email} (#${st.count + 1})`);
+    map[ctx.email] = { ...st, remLast: Date.now(), remCount: (st.remCount || 0) + 1 };
+    saveState(map);
+    log(`Atgādinājums nosūtīts klientam ${ctx.email} (#${map[ctx.email].remCount})`);
   } catch (e) {
-    log('Atgādinājuma kļūda', email, e.message);
+    log('Atgādinājuma kļūda', ctx.email, e.message);
   }
 }
 
-/** Kad klients beidzot reģistrējies un kursi pieslēgti — notīra atgādinājumu stāvokli. */
-function clearReminder(email) {
-  const map = loadReminders();
-  if (map[email]) { delete map[email]; saveReminders(map); }
+/** Nosūta "kursi pieslēgti" e-pastu vienreiz (kad klients pirmoreiz saņem kursus). */
+async function sendReadyEmail(ctx) {
+  if (DRY_RUN) return; // testa režīmā nesūta reāliem klientiem
+  if (!ctx || !ctx.email) return;
+  const map = loadState();
+  const st = map[ctx.email] || {};
+  if (st.welcomed) return; // jau nosūtīts
+  try {
+    const m = readyEmail(ctx);
+    const sent = await notifyEmail(ctx.email, m.subject, m.text, m.html);
+    if (!sent) return;
+    map[ctx.email] = { ...st, welcomed: true };
+    saveState(map);
+    log(`"Kursi pieslēgti" e-pasts nosūtīts: ${ctx.email}`);
+  } catch (e) {
+    log('"Kursi pieslēgti" kļūda', ctx.email, e.message);
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -497,22 +558,24 @@ async function addCoursesToClient(email, courseIds, expiresDate) {
 // --------------------------------------------------------------------------
 const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
 
-async function processCourses(email, courses, expires, source) {
+async function processCourses(email, courses, expires, source, meta = {}) {
+  const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
   try {
     const res = await addCoursesToClient(email, courses, expires);
     if (res.registered === false) {
-      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS });
+      addJob({ email, courses, expires, source, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage });
       await notifyAdmin(`⏳ ${email} vēl nav Nova — gaida rindā (${source}).`);
-      await maybeRemindCustomer(email); // pirmais atgādinājums klientam uzreiz
+      await maybeRemindCustomer(ctx); // pirmais atgādinājums klientam uzreiz
       return res;
     }
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${courses.join(', ')}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
+    await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
     return res;
   } catch (err) {
     log('KĻŪDA apstrādājot', email, ':', err.message);
     await notifyAdmin(`❌ ${email} kļūda: ${err.message}`);
     // kļūda — mēģina vēlreiz vēlāk
-    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS });
+    addJob({ email, courses, expires, source: `${source} (retry pēc kļūdas)`, runAt: Date.now() + RETRY_MS, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage });
     return { error: err.message };
   }
 }
@@ -534,6 +597,11 @@ function processOrder(order) {
   const lineItems = order.line_items || [];
   if (!email) { log('Pasūtījumam nav e-pasta — izlaižam'); return; }
 
+  // pircēja vārds (dzimuma personalizācijai)
+  const name = (order.customer && order.customer.first_name)
+    || (order.billing_address && order.billing_address.first_name)
+    || (order.shipping_address && order.shipping_address.first_name) || '';
+
   // valodas filtrs — apstrādā tikai atļautās valodas (noklusējums LV)
   const locale = (order.customer_locale || order.locale || '').toLowerCase();
   if (ALLOWED_LOCALES.length && !ALLOWED_LOCALES.some((l) => locale.startsWith(l))) {
@@ -549,17 +617,18 @@ function processOrder(order) {
 
     // beigu datums aprēķināts VIENREIZ pirkuma brīdī — visas grupas (arī drip) dabū to pašu
     const expires = resolveExpires(mapping);
+    const meta = { name, productTitle: mapping.title, productImage: mapping.image };
 
     for (const g of productGroups(mapping)) {
       if (!g.courses || !g.courses.length) continue;
       const src = `Shopify ${mapping.label}${g.delayDays ? ` +${g.delayDays}d` : ''}`;
       if (g.delayDays > 0) {
         // pakāpeniski — ieliek rindā ar aizkavi
-        addJob({ email, courses: g.courses, expires, source: src, runAt: Date.now() + g.delayDays * 86400000 });
+        addJob({ email, courses: g.courses, expires, source: src, runAt: Date.now() + g.delayDays * 86400000, ...meta });
       } else {
         // uzreiz (async, nebloķē webhook atbildi)
         log(`Pasūtījums ${email}: ${src} -> kursi ${g.courses} (līdz ${expires})`);
-        processCourses(email, g.courses, expires, src);
+        processCourses(email, g.courses, expires, src, meta);
       }
     }
   }
@@ -588,16 +657,17 @@ async function runJobsCycle() {
         resolvedIds.add(job.id);
         continue;
       }
+      const ctx = { email: job.email, name: job.name, productTitle: job.productTitle, productImage: job.productImage };
       try {
         const res = await addCoursesToClient(job.email, job.courses, job.expires);
         if (res.registered === false) {
           job.attempts = (job.attempts || 0) + 1;
           job.runAt = now + RETRY_MS; // vēl nav reģistrējies — mēģina vēlāk
-          await maybeRemindCustomer(job.email); // atgādina klientam izveidot kontu
+          await maybeRemindCustomer(ctx); // atgādina klientam izveidot kontu
         } else {
           log(`Job izpildīts: ${job.email} [${job.courses}]`);
           await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
-          clearReminder(job.email);
+          await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
           resolvedIds.add(job.id);
         }
       } catch (e) {
