@@ -407,12 +407,14 @@ async function selectCourseOption(page, courseId, title) {
   return null;
 }
 
-/** Pārbauda, vai klientam jau ir kurss (detail lapas kursu tabulās). */
-async function clientHasCourse(page, title) {
-  return page.evaluate((t) => {
-    const tables = [...document.querySelectorAll('[dusk^="courses-index-component"], [dusk="resource-table"]')];
-    return tables.some((tb) => tb.textContent.includes(t));
-  }, title);
+/** Pārbauda, vai klientam jau ir kurss — pēc ID (rindas dusk), izturīgi pret nosaukuma maiņu. */
+async function clientHasCourse(page, courseId) {
+  return page.evaluate((id) => {
+    // kursu tabulu rindas ir ar dusk="{id}-row"; drošāk nekā tekstu meklēt
+    if (document.querySelector(`[dusk="${id}-row"]`)) return true;
+    // rezerve: saite uz kursa resursu
+    return !!document.querySelector(`a[href*="/resources/courses/${id}"]`);
+  }, courseId);
 }
 
 /** Izvēlas kursu modālī pēc ID (caur nosaukumu) un iestata expires.
@@ -426,7 +428,7 @@ async function fillCourse(page, courseId, expiresDate) {
     // kurss nav dropdown — varbūt jau pievienots klientam (tad Nova to izslēdz)
     await page.click('[dusk="cancel-action-button"]').catch(() => {});
     await wait(800);
-    if (await clientHasCourse(page, title)) return { alreadyHas: true };
+    if (await clientHasCourse(page, courseId)) return { alreadyHas: true };
     throw new Error(`Kurss #${courseId} ("${title}") nav atrodams dropdown`);
   }
   log(`  Izvēlēts: ${picked}`);
