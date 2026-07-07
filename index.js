@@ -74,6 +74,19 @@ const PRODUCT_COURSE_MAP = {
       { delayDays: 3, courses: [172, 154, 164, 160, 165] },   // pēc 3 dienām (vēl pēc dienas)
     ],
   },
+  // Vasaras (agrā cena €49): TAS PATS saturs kā €57
+  '53318109724938': { label: 'Vasaras €49 (agrā)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras57', expires: '2026-08-20', courses: [190, 196, 159] },
+
+  // Vasaras + Uztura (agrā cena €79): TAS PATS saturs kā €97 (drip)
+  '53318109757706': {
+    label: 'Vasaras + Uztura €79 (agrā)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras97', expires: '2026-10-07',
+    drip: [
+      { delayDays: 0, courses: [190, 196, 159] },
+      { delayDays: 2, courses: [192] },
+      { delayDays: 3, courses: [172, 154, 164, 160, 165] },
+    ],
+  },
+
   // Sieviešu projekts (€97): 90 dienu piekļuve, drip
   '53201415864586': {
     label: "Sieviešu €97", title: 'Sieviešu projekts', image: 'sieviesu-projekts.jpg', expiresDays: 90,
