@@ -498,12 +498,17 @@ async function changeExpiry(page, clientId, courseId, newExpires) {
   // svaiga lapa, lai nav palicis "add" modāļa stale DOM (citādi expires_at trāpa nepareizo lauku)
   await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
   await wait(2000);
+  // "Courses" tabula ielādējas asinhroni — gaida konkrēto kursa rindu (līdz 12s)
+  await page.waitForSelector(`[dusk="${courseId}-checkbox"]`, { timeout: 12000 }).catch(() => {});
 
   // ieķeksē kursa rindu (checkbox ir tikai "Courses" tabulā)
   const checked = await page.evaluate((id) => {
-    const cb = document.querySelector(`[dusk="${id}-checkbox"] input, [dusk="${id}-checkbox"]`);
-    if (cb) { cb.click(); return true; }
-    return false;
+    const el = document.querySelector(`[dusk="${id}-checkbox"]`);
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center' });
+    const cb = el.querySelector('input') || el;
+    cb.click();
+    return true;
   }, courseId);
   if (!checked) throw new Error(`Nevar ieķeksēt kursa #${courseId} rindu (Change Expire)`);
   await wait(1000);
