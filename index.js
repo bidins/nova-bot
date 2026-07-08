@@ -113,6 +113,40 @@ const PRODUCT_COURSE_MAP = {
   // Movement / Kustību Pro (€78): tie paši kursi, uzreiz, 180 dienas
   '53241394037002': { label: 'Movement Pro €78', title: 'Kustību projekts', image: 'kustibu-projekts.jpg', expiresDays: 180, courses: [172, 154, 164, 160, 165] },
 
+  // Ģimenes projekts (galvenais €117): kā €97, bet #190 (pamācība) -> #198 (Ģimenes sāc ar šo)
+  '53201783423242': {
+    label: 'Ģimenes €117', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg', expires: '2026-10-07',
+    drip: [
+      { delayDays: 0, courses: [198, 196, 159] },
+      { delayDays: 2, courses: [192] },
+      { delayDays: 3, courses: [172, 154, 164, 160, 165] },
+    ],
+  },
+
+  // === PIEDĀVĀJUMS ESOŠAJIEM KLIENTIEM (piedavajums-klientiem) ===
+  // €50 Svara projekts = €57 saturs
+  '53327700132106': { label: 'Piedāvājums €50 (Svara)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras57', expires: '2026-08-20', courses: [190, 196, 159] },
+
+  // €70 Sieviešu/Vīriešu komplekts = Sieviešu saturs (90 dienas, drip)
+  '53327700951306': {
+    label: 'Piedāvājums €70 (Siev/Vīr)', title: 'Sieviešu projekts', image: 'sieviesu-projekts.jpg', expiresDays: 90,
+    drip: [
+      { delayDays: 0, courses: [190, 196, 192] },
+      { delayDays: 1, courses: [159] },
+      { delayDays: 2, courses: [172, 154, 164, 160, 165] },
+    ],
+  },
+
+  // €87 Ģimenes komplekts = Ģimenes saturs (#198 vietā #190)
+  '53327700984074': {
+    label: 'Piedāvājums €87 (Ģimenes)', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg', expires: '2026-10-07',
+    drip: [
+      { delayDays: 0, courses: [198, 196, 159] },
+      { delayDays: 2, courses: [192] },
+      { delayDays: 3, courses: [172, 154, 164, 160, 165] },
+    ],
+  },
+
   // Pievieno citus produktus šeit
 };
 
