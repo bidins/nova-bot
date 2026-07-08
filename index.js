@@ -266,22 +266,33 @@ function saveState(map) {
 // Kalkulatora pieeja (/dalibniekiem vārti) — pievieno SHA-256(e-pasts) allowlistā.
 // sha256 identisks kalkulatora sha256() (verificēts). Serves caur GET /calc-access.json.
 // --------------------------------------------------------------------------
+// Formāts: { "hash": "YYYY-MM-DD" | null }  (null = pastāvīga pieeja). Vecais masīvs tiek migrēts.
 function loadCalcHashes() {
-  try { return JSON.parse(fs.readFileSync(CALC_HASHES_FILE, 'utf8')); } catch { return []; }
+  try {
+    const data = JSON.parse(fs.readFileSync(CALC_HASHES_FILE, 'utf8'));
+    if (Array.isArray(data)) { const m = {}; for (const h of data) m[h] = null; return m; } // migrācija no vecā formāta
+    return (data && typeof data === 'object') ? data : {};
+  } catch { return {}; }
 }
-function saveCalcHashes(list) {
-  try { fs.writeFileSync(CALC_HASHES_FILE, JSON.stringify(list, null, 2)); }
+function saveCalcHashes(map) {
+  try { fs.writeFileSync(CALC_HASHES_FILE, JSON.stringify(map, null, 2)); }
   catch (e) { log('Nevar saglabāt calc-hashes:', e.message); }
 }
-function grantCalcAccess(email) {
+function grantCalcAccess(email, expires) {
   const norm = String(email || '').trim().toLowerCase();
   if (!norm || norm.indexOf('@') < 1) return;
   const h = crypto.createHash('sha256').update(norm, 'utf8').digest('hex');
-  const list = loadCalcHashes();
-  if (list.indexOf(h) < 0) {
-    list.push(h);
-    saveCalcHashes(list);
-    log(`Kalkulatora pieeja pievienota: ${norm} (${h.slice(0, 10)}…)`);
+  const exp = expires ? String(expires).slice(0, 10) : null; // 'YYYY-MM-DD' vai null (pastāvīgs)
+  const map = loadCalcHashes();
+  const prev = map[h];
+  let next;
+  if (prev === undefined) next = exp;
+  else if (prev === null || exp === null) next = null;      // pastāvīgs uzvar
+  else next = (exp > prev) ? exp : prev;                    // patur vēlāko datumu
+  if (prev === undefined || next !== prev) {
+    map[h] = next;
+    saveCalcHashes(map);
+    log(`Kalkulatora pieeja: ${norm} (${h.slice(0, 10)}…) termiņš=${next || 'pastāvīgs'}`);
   }
 }
 
@@ -821,9 +832,14 @@ function processOrder(order) {
     return;
   }
 
-  // Kalkulatora pieeja: ja pasūtījumā ir kāds kartes produkts — dod /dalibniekiem pieeju
-  if (lineItems.some((it) => PRODUCT_COURSE_MAP[String(it.variant_id)])) {
-    grantCalcAccess(email);
+  // Kalkulatora pieeja: dod /dalibniekiem pieeju ar pasūtījuma VĒLĀKO termiņu (starp kartes produktiem)
+  const calcExps = lineItems
+    .map((it) => PRODUCT_COURSE_MAP[String(it.variant_id)])
+    .filter(Boolean)
+    .map((m) => resolveExpires(m));
+  if (calcExps.length) {
+    const maxExp = calcExps.reduce((a, b) => (String(b).slice(0, 10) > String(a).slice(0, 10) ? b : a));
+    grantCalcAccess(email, maxExp);
   }
 
   for (const item of lineItems) {
@@ -953,6 +969,18 @@ app.post('/add', async (req, res) => {
   // tūlītējs — atbild uzreiz, apstrādā fonā (citādi Railway HTTP proxy taimauts ~30s)
   res.status(202).json({ accepted: true, email: email.toLowerCase(), courses });
   processCourses(email.toLowerCase(), courses, expires, 'manuāls /add').catch((e) => log('/add fona kļūda:', e.message));
+});
+
+// Kalkulatora pieejas piešķiršana (backfill / manuāls). Aizsargāts ar ADMIN_TOKEN.
+// POST /calc-grant  { grants: [{email, expires}, ...] }  vai  { email, expires }
+app.post('/calc-grant', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const body = req.body || {};
+  if (body.reset) { saveCalcHashes({}); log('calc-hashes notīrīts (reset)'); } // tīram backfillam
+  const grants = Array.isArray(body.grants) ? body.grants : [{ email: body.email, expires: body.expires }];
+  let n = 0;
+  for (const g of grants) { if (g && g.email) { grantCalcAccess(g.email, g.expires); n++; } }
+  res.json({ granted: n, total: Object.keys(loadCalcHashes()).length });
 });
 
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
