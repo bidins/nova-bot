@@ -47,6 +47,9 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''; // aizsargā /add un /jobs (h
 const RETRY_INTERVAL_MIN = Number(process.env.RETRY_INTERVAL_MIN || 30); // cik bieži pārbaudīt pending
 const PENDING_MAX_DAYS = Number(process.env.PENDING_MAX_DAYS || 30); // cik ilgi turēt pending pirms padodas
 const QUEUE_FILE = process.env.QUEUE_FILE || path.join(__dirname, 'jobs.json');
+// Kalkulatora pieejas haši (SHA-256 no e-pasta) — go.martinsbidins.com/dalibniekiem vārti.
+// Serves caur GET /calc-access.json; kalkulators tos pielej pie AG_HASHES.
+const CALC_HASHES_FILE = process.env.CALC_HASHES_FILE || path.join(__dirname, 'calc-hashes.json');
 
 // Klienta atgādinājumi (neregistrētiem pircējiem — "izveido kontu")
 const REMINDER_ENABLED = process.env.REMINDER_ENABLED === '1'; // jāieslēdz apzināti
@@ -257,6 +260,29 @@ function loadState() {
 }
 function saveState(map) {
   try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(map, null, 2)); } catch (e) { log('Nevar saglabāt state:', e.message); }
+}
+
+// --------------------------------------------------------------------------
+// Kalkulatora pieeja (/dalibniekiem vārti) — pievieno SHA-256(e-pasts) allowlistā.
+// sha256 identisks kalkulatora sha256() (verificēts). Serves caur GET /calc-access.json.
+// --------------------------------------------------------------------------
+function loadCalcHashes() {
+  try { return JSON.parse(fs.readFileSync(CALC_HASHES_FILE, 'utf8')); } catch { return []; }
+}
+function saveCalcHashes(list) {
+  try { fs.writeFileSync(CALC_HASHES_FILE, JSON.stringify(list, null, 2)); }
+  catch (e) { log('Nevar saglabāt calc-hashes:', e.message); }
+}
+function grantCalcAccess(email) {
+  const norm = String(email || '').trim().toLowerCase();
+  if (!norm || norm.indexOf('@') < 1) return;
+  const h = crypto.createHash('sha256').update(norm, 'utf8').digest('hex');
+  const list = loadCalcHashes();
+  if (list.indexOf(h) < 0) {
+    list.push(h);
+    saveCalcHashes(list);
+    log(`Kalkulatora pieeja pievienota: ${norm} (${h.slice(0, 10)}…)`);
+  }
 }
 
 /** Nosaka dzimumu pēc latviešu vārda: 'f' | 'm' | null (neskaidrs -> neitrāls). */
@@ -795,6 +821,11 @@ function processOrder(order) {
     return;
   }
 
+  // Kalkulatora pieeja: ja pasūtījumā ir kāds kartes produkts — dod /dalibniekiem pieeju
+  if (lineItems.some((it) => PRODUCT_COURSE_MAP[String(it.variant_id)])) {
+    grantCalcAccess(email);
+  }
+
   for (const item of lineItems) {
     const variantId = String(item.variant_id);
     const mapping = PRODUCT_COURSE_MAP[variantId];
@@ -926,6 +957,13 @@ app.post('/add', async (req, res) => {
 
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
+// Kalkulatora allowlist — publisks (haši jau tāpat atklāti kalkulatora HTML), CORS atļauts.
+app.get('/calc-access.json', (_req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Cache-Control', 'no-store');
+  res.json(loadCalcHashes());
+});
+
 app.get('/', (_req, res) => res.send('Nova Bot darbojas!')); // health — bez datiem
 
 app.listen(PORT, () => {
