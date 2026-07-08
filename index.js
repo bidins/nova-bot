@@ -65,9 +65,10 @@ const PRODUCT_COURSE_MAP = {
   // Summer — Vasaras (€57): visi uzreiz, līdz 2026-08-20
   '53236774535434': { label: 'Vasaras €57', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras57', expires: '2026-08-20', courses: [190, 196, 159] },
 
-  // Summer — Vasaras + Uztura (€97): drip, līdz 2026-10-07
+  // Summer — Vasaras + Uztura (€97): drip; pirms 14.07 -> 2026-10-07, pēc -> 90 dienas
   '53236774568202': {
-    label: 'Vasaras + Uztura €97', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras97', expires: '2026-10-07',
+    label: 'Vasaras + Uztura €97', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras97',
+    expires: '2026-10-07', cutoff: '2026-07-14', expiresAfterCutoffDays: 90,
     drip: [
       { delayDays: 0, courses: [190, 196, 159] },            // uzreiz
       { delayDays: 2, courses: [192] },                       // pēc 2 dienām
@@ -77,9 +78,10 @@ const PRODUCT_COURSE_MAP = {
   // Vasaras (agrā cena €49): TAS PATS saturs kā €57
   '53318109724938': { label: 'Vasaras €49 (agrā)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras57', expires: '2026-08-20', courses: [190, 196, 159] },
 
-  // Vasaras + Uztura (agrā cena €79): TAS PATS saturs kā €97 (drip)
+  // Vasaras + Uztura (agrā cena €79): TAS PATS saturs kā €97 (drip); cutoff 14.07 -> pēc tam 90 dienas
   '53318109757706': {
-    label: 'Vasaras + Uztura €79 (agrā)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras97', expires: '2026-10-07',
+    label: 'Vasaras + Uztura €79 (agrā)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', welcomeMsg: 'vasaras97',
+    expires: '2026-10-07', cutoff: '2026-07-14', expiresAfterCutoffDays: 90,
     drip: [
       { delayDays: 0, courses: [190, 196, 159] },
       { delayDays: 2, courses: [192] },
@@ -115,7 +117,7 @@ const PRODUCT_COURSE_MAP = {
 
   // Ģimenes projekts (galvenais €117): kā €97, bet #190 (pamācība) -> #198 (Ģimenes sāc ar šo)
   '53201783423242': {
-    label: 'Ģimenes €117', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg', expires: '2026-10-07',
+    label: 'Ģimenes €117', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg', expiresDays: 90,
     drip: [
       { delayDays: 0, courses: [198, 196, 159] },
       { delayDays: 2, courses: [192] },
@@ -139,7 +141,7 @@ const PRODUCT_COURSE_MAP = {
 
   // €87 Ģimenes komplekts = Ģimenes saturs (#198 vietā #190)
   '53327700984074': {
-    label: 'Piedāvājums €87 (Ģimenes)', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg', expires: '2026-10-07',
+    label: 'Piedāvājums €87 (Ģimenes)', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg', expiresDays: 90,
     drip: [
       { delayDays: 0, courses: [198, 196, 159] },
       { delayDays: 2, courses: [192] },
@@ -760,9 +762,18 @@ function productGroups(mapping) {
   return [{ delayDays: 0, courses: mapping.courses || [] }];
 }
 
-/** Nosaka beigu datumu: relatīvs (expiresDays no šodienas) vai fiksēts (expires). */
+/** Nosaka beigu datumu:
+ *  - cutoff loģika: pirms `cutoff` datuma -> fiksēts `expires`; pēc -> relatīvs `expiresAfterCutoffDays`
+ *  - relatīvs: `expiresDays` no šodienas
+ *  - fiksēts: `expires` */
 function resolveExpires(mapping) {
-  if (mapping.expiresDays) return new Date(Date.now() + mapping.expiresDays * 86400000).toISOString().slice(0, 10);
+  const relative = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+  if (mapping.cutoff && mapping.expiresAfterCutoffDays) {
+    const cutoffMs = new Date(`${mapping.cutoff}T00:00:00Z`).getTime();
+    if (Date.now() >= cutoffMs) return relative(mapping.expiresAfterCutoffDays); // pēc cutoff -> 90 dienas
+    return mapping.expires; // pirms cutoff -> fiksētais sezonas datums
+  }
+  if (mapping.expiresDays) return relative(mapping.expiresDays);
   return mapping.expires;
 }
 
