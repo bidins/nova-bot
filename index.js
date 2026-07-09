@@ -765,7 +765,7 @@ const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
 
 async function processCourses(email, courses, expires, source, meta = {}, opts = {}) {
   const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
-  const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg };
+  const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg, orderGid: opts.orderGid };
   // ieliek aizkavētās drip grupas rindā (jauniem klientiem)
   const queueDelayed = () => (opts.delayedGroups || []).forEach((g) =>
     addJob({ email, courses: g.courses, expires, source: `Shopify ${opts.label} +${g.delayDays}d`, runAt: Date.now() + g.delayDays * 86400000, ...jobMeta }));
@@ -781,6 +781,7 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
     const connected = (res.done && res.done.join(', ')) || courses.join(', ');
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
     await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
+    if (opts.orderGid) await fulfillShopifyOrder(opts.orderGid); // klients atrasts+pieslēgts -> Shopify fulfilled
     if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
     return res;
   } catch (err) {
@@ -842,6 +843,8 @@ function processOrder(order) {
     grantCalcAccess(email, maxExp);
   }
 
+  const orderGid = orderGidOf(order); // Shopify fulfillment mērķis (kad kursi pieslēgti)
+
   for (const item of lineItems) {
     const variantId = String(item.variant_id);
     const mapping = PRODUCT_COURSE_MAP[variantId];
@@ -857,7 +860,7 @@ function processOrder(order) {
 
     log(`Pasūtījums ${email}: Shopify ${mapping.label} -> uzreiz ${immediate}${delayedGroups.length ? `, drip ${extraCourses}` : ''} (līdz ${expires})`);
     // uzreiz apstrādā tūlītējo grupu; ja esošam klientam jau ir kāds kurss -> pieslēdz arī aizkavētās uzreiz (flatten)
-    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label });
+    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid });
   }
 }
 
@@ -895,6 +898,7 @@ async function runJobsCycle() {
           log(`Job izpildīts: ${job.email} [${job.courses}]`);
           await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
           await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
+          if (job.orderGid) await fulfillShopifyOrder(job.orderGid); // klients tagad reģistrējies -> Shopify fulfilled
           resolvedIds.add(job.id);
         }
       } catch (e) {
@@ -924,6 +928,51 @@ const LAST_CHECK_FILE = path.join(path.dirname(QUEUE_FILE), 'last-check.txt');
 
 const sha256email = (email) => crypto.createHash('sha256').update(String(email || '').trim().toLowerCase(), 'utf8').digest('hex');
 const variantIdOf = (gid) => Number(String(gid || '').split('/').pop());
+
+// Ģenerisks Shopify Admin GraphQL izsaukums
+async function shopifyGraphql(query, variables = {}) {
+  const r = await fetch(`https://${SHOP_DOMAIN}/admin/api/2025-01/graphql.json`, {
+    method: 'POST',
+    headers: { 'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+  const j = await r.json();
+  if (!j.data) throw new Error('Shopify API: ' + JSON.stringify(j.errors || j).slice(0, 300));
+  return j.data;
+}
+
+// --------------------------------------------------------------------------
+// Real-time fulfillment — atzīmē Shopify pasūtījumu kā "fulfilled", kad klients pieslēgts
+// --------------------------------------------------------------------------
+const orderGidOf = (order) => {
+  const raw = (order && (order.admin_graphql_api_id || order.id)) || '';
+  if (!raw) return null;
+  return String(raw).startsWith('gid://') ? String(raw) : `gid://shopify/Order/${raw}`;
+};
+const fulfilledOrders = new Set(); // dedup vienam pasūtījumam (daudzi line items)
+
+async function fulfillShopifyOrder(orderGid) {
+  if (DRY_RUN || !SHOPIFY_ADMIN_TOKEN || !orderGid) return;
+  if (fulfilledOrders.has(orderGid)) return;
+  fulfilledOrders.add(orderGid);
+  try {
+    const q = `query($id: ID!){ order(id:$id){ name fulfillmentOrders(first:10){ edges { node { id status } } } } }`;
+    const data = await shopifyGraphql(q, { id: orderGid });
+    const fos = ((data.order && data.order.fulfillmentOrders.edges) || [])
+      .map((e) => e.node).filter((n) => n.status === 'OPEN' || n.status === 'IN_PROGRESS');
+    if (!fos.length) { log(`Fulfillment: ${orderGid} nav OPEN fulfillmentOrder — jau izpildīts, izlaižu`); return; }
+    const m = `mutation($fo:[FulfillmentOrderLineItemsInput!]!){
+      fulfillmentCreateV2(fulfillment:{ lineItemsByFulfillmentOrder:$fo, notifyCustomer:false }){
+        fulfillment { id status } userErrors { field message } } }`;
+    const res = await shopifyGraphql(m, { fo: fos.map((f) => ({ fulfillmentOrderId: f.id })) });
+    const ue = res.fulfillmentCreateV2 && res.fulfillmentCreateV2.userErrors;
+    if (ue && ue.length) { log('Fulfillment userErrors:', JSON.stringify(ue)); fulfilledOrders.delete(orderGid); }
+    else log(`Fulfillment: ${data.order.name || orderGid} atzīmēts kā fulfilled ✅`);
+  } catch (e) {
+    log('Fulfillment kļūda', orderGid, e.message);
+    fulfilledOrders.delete(orderGid); // ļauj mēģināt vēlreiz vēlāk
+  }
+}
 
 async function fetchRecentPaidOrders(sinceISO) {
   const query = `query($q: String!) { orders(first: 100, query: $q, sortKey: CREATED_AT, reverse: true) {
