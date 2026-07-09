@@ -26,6 +26,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
+const reminders = require('./reminders');
 
 // --------------------------------------------------------------------------
 // Konfigurācija
@@ -841,6 +842,10 @@ function processOrder(order) {
   if (calcExps.length) {
     const maxExp = calcExps.reduce((a, b) => (String(b).slice(0, 10) > String(a).slice(0, 10) ? b : a));
     grantCalcAccess(email, maxExp);
+    // atgādinājumu kontakts (email->termiņš, atiestata sekvenci pie atjaunošanas)
+    reminders.upsertContact(email, name, guessGender(name) === 'm' ? 'm' : 'f', maxExp);
+    // konversija: ja pirkums nāca no atgādinājuma e-pasta (utm_source=resend) — aptur sekvenci
+    if (order.landing_site) reminders.recordConversion(email, order.landing_site);
   }
 
   const orderGid = orderGidOf(order); // Shopify fulfillment mērķis (kad kursi pieslēgti)
@@ -1085,6 +1090,9 @@ function requireAdmin(req, res) {
   res.status(403).json({ error: 'forbidden' });
   return false;
 }
+
+// Kalkulatora atjaunošanas atgādinājumi (Resend): /resend/webhook, /calc-unsub, /calc-reports, /calc-run, /calc-test
+reminders.wireReminders(app, { requireAdmin });
 
 app.post('/webhook/shopify', (req, res) => {
   const v = verifyShopifyHmac(req);
