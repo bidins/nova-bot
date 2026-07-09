@@ -37,10 +37,10 @@ const PORT = process.env.PORT || 3000;
 const DRY_RUN = process.env.DRY_RUN === '1'; // ja 1 — neklikšķina "Run Action" (drošs tests)
 // Ko darīt, ja kurss klientam JAU ir pievienots: 'extend' (tikai pagarināt), 'overwrite' (vienmēr jaunais), 'skip' (neko)
 const EXPIRY_POLICY = process.env.EXPIRY_POLICY || 'extend';
-// Kuras pircēja valodas apstrādāt (customer_locale). Noklusējums tikai 'lv'.
-// Variant ID ir vienāds visās valodās, tāpēc filtrs pēc valodas neļauj EN/LT pircējiem
-// saņemt LV kursus. Tukšs = apstrādā visas valodas.
-const ALLOWED_LOCALES = (process.env.ALLOWED_LOCALES ?? 'lv').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+// Kuras pircēja valodas apstrādāt (customer_locale). NOKLUSĒJUMS: tukšs = apstrādā VISUS.
+// (customer_locale ir tikai pārlūka valoda, ne tautība — īsti latvieši var būt ar en-US/en-GB.
+//  Saturu nosaka VARIANTS, ne valoda. Ja kādreiz vajag filtru: ALLOWED_LOCALES=lv)
+const ALLOWED_LOCALES = (process.env.ALLOWED_LOCALES ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || ''; // ja tukšs — HMAC netiek pārbaudīts
 const WEBHOOK_HMAC_ENFORCE = process.env.WEBHOOK_HMAC_ENFORCE === '1'; // ja 1 — noraida webhook ar sliktu HMAC (citādi tikai brīdina)
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''; // aizsargā /add un /jobs (header X-Admin-Token vai ?token=)
