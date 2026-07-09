@@ -915,6 +915,101 @@ async function runJobsCycle() {
 }
 
 // --------------------------------------------------------------------------
+// Dienas pārbaude — salīdzina Shopify pasūtījumus ar apstrādātajiem, ziņo + auto-salabo
+// --------------------------------------------------------------------------
+const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || '';
+const SHOP_DOMAIN = process.env.SHOP_DOMAIN || 'tmbgku-dp.myshopify.com';
+const CHECK_CUTOFF = process.env.CHECK_CUTOFF || '2026-07-14'; // pirms -> 4x/dienā; pēc -> 1x/dienā
+const LAST_CHECK_FILE = path.join(path.dirname(QUEUE_FILE), 'last-check.txt');
+
+const sha256email = (email) => crypto.createHash('sha256').update(String(email || '').trim().toLowerCase(), 'utf8').digest('hex');
+const variantIdOf = (gid) => Number(String(gid || '').split('/').pop());
+
+async function fetchRecentPaidOrders(sinceISO) {
+  const query = `query($q: String!) { orders(first: 100, query: $q, sortKey: CREATED_AT, reverse: true) {
+    edges { node { id name email customerLocale createdAt customer { firstName } lineItems(first: 10) { edges { node { variant { id } } } } } } } }`;
+  const r = await fetch(`https://${SHOP_DOMAIN}/admin/api/2025-01/graphql.json`, {
+    method: 'POST',
+    headers: { 'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables: { q: `financial_status:paid created_at:>=${sinceISO}` } }),
+  });
+  const j = await r.json();
+  if (!j.data || !j.data.orders) throw new Error('Shopify API: ' + JSON.stringify(j.errors || j).slice(0, 200));
+  return j.data.orders.edges.map((e) => e.node);
+}
+
+// Pārbūvē pasūtījuma objektu no Admin API un apstrādā (auto-salabošanai)
+function reprocessOrder(node) {
+  processOrder({
+    id: node.id,
+    email: node.email,
+    customer_locale: node.customerLocale,
+    customer: { first_name: node.customer && node.customer.firstName },
+    line_items: (node.lineItems.edges || []).map((e) => ({ variant_id: variantIdOf(e.node.variant && e.node.variant.id) })),
+  });
+}
+
+async function runDailyCheck(force) {
+  if (!SHOPIFY_ADMIN_TOKEN) { log('Dienas pārbaude: nav SHOPIFY_ADMIN_TOKEN — izlaižu'); return; }
+  const recipient = process.env.ADMIN_EMAIL || NOVA_EMAIL;
+  try {
+    const since = new Date(Date.now() - 40 * 3600 * 1000).toISOString(); // pēdējās ~40h
+    const orders = await fetchRecentPaidOrders(since);
+    const hashes = loadCalcHashes();
+    const ok = [], missedLV = [], nonLV = [];
+    for (const o of orders) {
+      const mapped = (o.lineItems.edges || []).some((e) => PRODUCT_COURSE_MAP[String(variantIdOf(e.node.variant && e.node.variant.id))]);
+      if (!mapped) continue;
+      const locale = (o.customerLocale || '').toLowerCase();
+      const isLV = ALLOWED_LOCALES.some((l) => locale.startsWith(l));
+      const processed = hashes[sha256email(o.email)] !== undefined;
+      if (!isLV) nonLV.push(o);
+      else if (processed) ok.push(o);
+      else missedLV.push(o);
+    }
+    // auto-salabo LV izkritušos
+    for (const o of missedLV) { log(`Dienas pārbaude: IZKRITIS ${o.name} ${o.email} — auto-apstrādāju`); reprocessOrder(o); }
+
+    const totalRelevant = ok.length + missedLV.length + nonLV.length;
+    const afterCutoff = new Date().toISOString().slice(0, 10) >= CHECK_CUTOFF;
+    if (afterCutoff && totalRelevant === 0 && !force) { log('Dienas pārbaude: nav pasūtījumu — e-pastu nesūtu'); return; }
+
+    let subject, body;
+    if (!missedLV.length && !nonLV.length) {
+      subject = `✅ Nova Bot pārbaude — viss OK (${ok.length} pasūt.)`;
+      body = `Pēdējās ~40h: ${ok.length} LV pasūtījumi, visiem pieeja piešķirta. Problēmu nav. 👍`;
+    } else {
+      subject = `⚠️ Nova Bot pārbaude — ${missedLV.length} izkrituši, ${nonLV.length} ne-LV`;
+      body = `Pēdējās ~40h pārbaude:\n\n✅ Kārtībā: ${ok.length}\n`;
+      if (missedLV.length) body += `\n🔧 IZKRITUŠI (auto-salaboti tagad):\n${missedLV.map((o) => `  ${o.name} — ${o.email}`).join('\n')}\n`;
+      if (nonLV.length) body += `\n🌐 NE-LV pircēji (nesaņēma neko — jālemj manuāli):\n${nonLV.map((o) => `  ${o.name} — ${o.email} (${o.customerLocale})`).join('\n')}\n`;
+    }
+    await notifyEmail(recipient, subject, body);
+    log(`Dienas pārbaude: OK=${ok.length} izkrituši=${missedLV.length} neLV=${nonLV.length} — e-pasts nosūtīts`);
+  } catch (e) {
+    log('Dienas pārbaudes kļūda:', e.message);
+    try { await notifyEmail(recipient, '⚠️ Nova Bot pārbaudes kļūda', String(e.message)); } catch {}
+  }
+}
+
+// Plānotājs: pirms CHECK_CUTOFF → 10/14/18/22; pēc → 10 (Rīgas laiks). Dedublē pēc "slota".
+function checkTick() {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Riga', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+    const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+    const dateStr = `${p.year}-${p.month}-${p.day}`;
+    const hours = dateStr >= CHECK_CUTOFF ? [10] : [10, 14, 18, 22];
+    if (!hours.includes(Number(p.hour)) || Number(p.minute) >= 6) return;
+    const slot = `${dateStr}-${p.hour}`;
+    let last = ''; try { last = fs.readFileSync(LAST_CHECK_FILE, 'utf8').trim(); } catch {}
+    if (slot === last) return;
+    try { fs.writeFileSync(LAST_CHECK_FILE, slot); } catch {}
+    log(`Dienas pārbaude: slots ${slot}`);
+    runDailyCheck();
+  } catch (e) { log('checkTick kļūda:', e.message); }
+}
+
+// --------------------------------------------------------------------------
 // HTTP serveris
 // --------------------------------------------------------------------------
 const app = express();
@@ -983,6 +1078,13 @@ app.post('/calc-grant', (req, res) => {
   res.json({ granted: n, total: Object.keys(loadCalcHashes()).length });
 });
 
+// Manuāli palaist dienas pārbaudi (testam). Aizsargāts.
+app.post('/run-check', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  res.json({ started: true });
+  runDailyCheck(true).catch((e) => log('/run-check kļūda:', e.message));
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 // Kalkulatora allowlist — publisks (haši jau tāpat atklāti kalkulatora HTML), CORS atļauts.
@@ -1000,4 +1102,7 @@ app.listen(PORT, () => {
   // periodisks worker (drip grafiks + retry)
   setInterval(() => runJobsCycle().catch((e) => log('Jobs cikla kļūda:', e.message)), RETRY_INTERVAL_MIN * 60 * 1000);
   setTimeout(() => runJobsCycle().catch(() => {}), 15000); // viens cikls drīz pēc starta
+  // dienas pārbaudes plānotājs (Rīgas laiks: pirms 14.07 -> 10/14/18/22; pēc -> 10)
+  setInterval(checkTick, 5 * 60 * 1000);
+  log(`Dienas pārbaude: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | cutoff ${CHECK_CUTOFF}`);
 });
