@@ -182,21 +182,25 @@ async function runReminders(){
     if (type) dueList.push({ c, type });
   }
   log(`Pienākas: ${dueList.length}, sūtu līdz ${MAX_PER_RUN} (vilnis)`);
-  let sent = 0;
-  for (const { c, type } of dueList.slice(0, MAX_PER_RUN)) {
+  let sent = 0, skipped = 0;
+  for (const { c: c0, type } of dueList.slice(0, MAX_PER_RUN)) {
+    // SVAIGA pārbaude tieši pirms sūtīšanas: vai nav nopircis/atjaunojies/atrakstījies pa to laiku
+    const fresh = loadStore();
+    const c = Object.assign({ email: c0.email }, fresh[c0.email]);
+    if (dueType(c, today()) !== type) { skipped++; log('izlaižu (statuss mainījies, piem. jau nopircis):', c.email); continue; }
     try {
       const res = await sendReminder(c, type);
-      store[c.email].sent = store[c.email].sent || {};
-      store[c.email].sent[type] = t;
-      store[c.email].lastMsgId = res.id;
-      saveStore(store);
+      fresh[c.email].sent = fresh[c.email].sent || {};
+      fresh[c.email].sent[type] = today();
+      fresh[c.email].lastMsgId = res.id;
+      saveStore(fresh);
       recordEvent({ t: 'sent', email: c.email, content: TEMPLATES[type].content, campaign: TEMPLATES[type].camp, id: res.id, at: Date.now() });
       sent++;
       await new Promise(r => setTimeout(r, 400)); // neliela atstarpe
     } catch (e) { log('sūtīšanas kļūda', c.email, e.message); }
   }
-  log(`Nosūtīti: ${sent}`);
-  return { due: dueList.length, sent };
+  log(`Nosūtīti: ${sent}, izlaisti (jau nopirkuši/atrakstījušies): ${skipped}`);
+  return { due: dueList.length, sent, skipped };
 }
 
 // ---- Notikumi (Resend webhook + konversijas) ----
