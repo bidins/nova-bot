@@ -1106,6 +1106,12 @@ app.post('/webhook/shopify', (req, res) => {
   let order;
   try { order = JSON.parse(req.body.toString('utf8')); } catch (e) { return log('Nederīgs JSON webhook:', e.message); }
   processOrder(order);
+  // Pārsūtām pasūtījumu atribūcijas panelim (fire-and-forget — neietekmē kursu pieslēgšanu).
+  fetch('https://martinsbidins-platform.vercel.app/api/webhooks/attribution?k=8bc7e22c26f8c67e312830ee8e26649336483488', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-shopify-topic': 'orders/paid' },
+    body: JSON.stringify(order),
+  }).then(r => log(`Atribūcija pārsūtīta: HTTP ${r.status}`)).catch(e => log('Atribūcija neizdevās:', e.message));
 });
 
 // Manuāls pieslēgums (aizsargāts ar ADMIN_TOKEN):
