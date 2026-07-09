@@ -1010,9 +1010,10 @@ async function runDailyCheck(force) {
       const mapped = (o.lineItems.edges || []).some((e) => PRODUCT_COURSE_MAP[String(variantIdOf(e.node.variant && e.node.variant.id))]);
       if (!mapped) continue;
       const locale = (o.customerLocale || '').toLowerCase();
-      const isLV = ALLOWED_LOCALES.some((l) => locale.startsWith(l));
+      // in-scope = tāpat kā processOrder gate: tukšs ALLOWED_LOCALES => visi valodas apstrādājami
+      const inScope = !ALLOWED_LOCALES.length || ALLOWED_LOCALES.some((l) => locale.startsWith(l));
       const processed = hashes[sha256email(o.email)] !== undefined;
-      if (!isLV) nonLV.push(o);
+      if (!inScope) nonLV.push(o);
       else if (processed) ok.push(o);
       else missedLV.push(o);
     }
