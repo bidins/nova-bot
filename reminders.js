@@ -221,8 +221,19 @@ function handleResendWebhook(body){
     const type = (body && body.type || '').replace('email.', '');
     const d = body && body.data || {};
     const to = Array.isArray(d.to) ? d.to[0] : d.to;
-    const tags = {}; (d.tags || []).forEach(x => { tags[x.name] = x.value; });
-    recordEvent({ t: type, email: (to||'').toLowerCase(), content: tags.content || '', campaign: tags.campaign || '', id: d.email_id || '', at: Date.now() });
+    // Resend tags var būt masīvs [{name,value}] VAI objekts {name:value} — apstrādā abus
+    const tags = {};
+    const rt = d.tags;
+    if (Array.isArray(rt)) rt.forEach((x) => { if (x && x.name != null) tags[x.name] = x.value; });
+    else if (rt && typeof rt === 'object') Object.assign(tags, rt);
+    let content = tags.content || '';
+    let campaign = tags.campaign || '';
+    // Rezerve (drošs): ja webhookā nav tagu, sasaista pēc email_id ar oriģinālo 'sent' notikumu
+    if ((!content || !campaign) && d.email_id) {
+      const ev = loadEvents().find((e) => e.t === 'sent' && e.id === d.email_id);
+      if (ev) { content = content || ev.content || ''; campaign = campaign || ev.campaign || ''; }
+    }
+    recordEvent({ t: type, email: (to||'').toLowerCase(), content, campaign, id: d.email_id || '', at: Date.now() });
     // atzīmē store atrakstīšanos/sūdzību
     if (type === 'complained' || type === 'bounced') {
       const s = loadStore(); if (s[(to||'').toLowerCase()]) { s[(to||'').toLowerCase()].unsub = true; saveStore(s); }
