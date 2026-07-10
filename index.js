@@ -638,6 +638,82 @@ async function changeExpiry(page, clientId, courseId, newExpires) {
   return { updated: true, from: current, to: newDt };
 }
 
+/** Pēc pieslēgšanas: pauzē kursus, kuru expires_at ir PAGĀTNĒ (beigušies, šoreiz nepagarināti).
+ *  Mūža pieeja (expires "—"/tukšs) un jau apturētie (NOT STOPPED sarkans) — netiek aiztikti. */
+async function pauseExpiredCourses(page, clientId) {
+  await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
+  await wait(2500);
+  // gaida "Courses" tabulu (ar EXPIRES AT + LIFE LONG galvenēm)
+  await page.waitForFunction(() => [...document.querySelectorAll('table')].some((t) => {
+    const hs = [...t.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
+    return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
+  }), { timeout: 12000 }).catch(() => {});
+
+  const expired = await page.evaluate(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const t = [...document.querySelectorAll('table')].find((tb) => {
+      const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
+      return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
+    });
+    if (!t) return [];
+    const hs = [...t.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
+    const expIdx = hs.findIndex((h) => h.includes('EXPIRES AT'));
+    const nsIdx = hs.findIndex((h) => h.includes('NOT STOPPED'));
+    const out = [];
+    for (const tr of t.querySelectorAll('tbody tr')) {
+      const id = (tr.getAttribute('dusk') || '').replace('-row', '');
+      if (!id) continue;
+      const tds = [...tr.querySelectorAll('td')];
+      const raw = tds[expIdx] ? tds[expIdx].textContent.trim() : '';
+      const datePart = raw.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}/.test(datePart)) continue; // mūža/tukšs (—) — neaiztiek
+      if (datePart >= today) continue; // vēl aktīvs (nākotne/šodien) — neaiztiek
+      // NOT STOPPED: zaļš = aktīvs (jāpauzē), sarkans = jau apturēts (izlaist — idempotence)
+      const svg = nsIdx >= 0 && tds[nsIdx] ? tds[nsIdx].querySelector('svg') : null;
+      const notStopped = svg ? svg.classList.contains('text-green-500') : true;
+      if (!notStopped) continue;
+      out.push({ id, expires: raw });
+    }
+    return out;
+  });
+
+  if (!expired.length) { log('  Pause: nav beigušos aktīvu kursu (visi aktīvi/mūža/jau apturēti)'); return { paused: [] }; }
+  log(`  Pause: beigušies kursi ${expired.map((e) => e.id).join(', ')} — apturu piekļuvi`);
+
+  // ieķeksē visus beigušos
+  await page.evaluate((ids) => {
+    for (const id of ids) {
+      const el = document.querySelector(`[dusk="${id}-checkbox"]`);
+      if (el) { el.scrollIntoView({ block: 'center' }); (el.querySelector('input') || el).click(); }
+    }
+  }, expired.map((e) => e.id));
+  await wait(1000);
+
+  const ok = await page.evaluate(() => {
+    const s = [...document.querySelectorAll('select[dusk="action-select"]')].find((sel) => [...sel.options].some((o) => o.value === 'pause-access-client-to-course'));
+    if (!s) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(s, 'pause-access-client-to-course');
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  });
+  if (!ok) throw new Error('Nav "Pause access" darbības');
+  await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
+  await wait(1000);
+
+  if (DRY_RUN) {
+    log(`  [DRY_RUN] Pause ${expired.map((e) => e.id).join(',')} (neizpildu)`);
+    await page.click('[dusk="cancel-action-button"]').catch(() => {});
+    return { dryRun: true, expired: expired.map((e) => e.id) };
+  }
+
+  await page.click('[dusk="confirm-action-button"]');
+  await page.waitForFunction(() => !document.querySelector('[dusk="modal-backdrop"]'), { timeout: 15000 }).catch(() => {});
+  await wait(1200);
+  log(`  Pause: apturēti ${expired.length} kursi (${expired.map((e) => e.id).join(', ')})`);
+  return { paused: expired.map((e) => e.id) };
+}
+
 /** Pievieno VIENU kursu (viens action modālis = viens kurss). */
 async function addOneCourse(page, clientId, courseId, expiresDate) {
   await openAddCourseModal(page, clientId);
@@ -755,7 +831,9 @@ async function addCoursesToClient(email, courseIds, expiresDate, meta = {}, opts
     }
     // iekšējā Nova ziņa (vienreiz, ja produktam definēta)
     await maybeSendNovaMessage(page, clientId, email, meta.welcomeMsg);
-    return { registered: true, clientId, done, flattened };
+    // pēc pieslēgšanas: apturi beigušos (nepagarinātos) kursus; mūža/aktīvos neaiztiek
+    const paused = await pauseExpiredCourses(page, clientId).catch((e) => { log('Pause kļūda:', e.message); return null; });
+    return { registered: true, clientId, done, flattened, paused: paused && paused.paused };
   });
 }
 
