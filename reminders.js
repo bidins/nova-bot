@@ -34,7 +34,8 @@ function saveEvents(e){ try { fs.writeFileSync(CALC_EVENTS_FILE, JSON.stringify(
 // Tikai PIRMAIS vārds, pareizā reģistrā (DB var būt "ILMĀRS TOŠENS" -> "Ilmārs")
 function firstName(name){
   const f = String(name || '').trim().split(/\s+/)[0];
-  return f ? f.charAt(0).toUpperCase() + f.slice(1).toLowerCase() : '';
+  if (f.length <= 1) return ''; // tukšs vai viens burts/iniciālis -> bez vārda ("Čau!")
+  return f.charAt(0).toUpperCase() + f.slice(1).toLowerCase();
 }
 // Uzrunas locījums (vokatīvs): vīriešiem noņem beigu -s/-š (Jānis->Jāni, Ilmārs->Ilmār, Mārtiņš->Mārtiņ).
 // Sievietēm = nominatīvs (Anna->Anna). Vienmēr tikai pirmais vārds + pareizs reģistrs.
@@ -226,8 +227,21 @@ function handleResendWebhook(body){
     const type = (body && body.type || '').replace('email.', '');
     const d = body && body.data || {};
     const to = Array.isArray(d.to) ? d.to[0] : d.to;
-    const tags = {}; (d.tags || []).forEach(x => { tags[x.name] = x.value; });
-    recordEvent({ t: type, email: (to||'').toLowerCase(), content: tags.content || '', campaign: tags.campaign || '', id: d.email_id || '', at: Date.now() });
+    const emailId = d.email_id || d.id || '';
+    // Resend tags: masīvs [{name,value}] (delivered) VAI objekts; opened/clicked tagu var nebūt
+    const tags = {};
+    const rt = d.tags;
+    if (Array.isArray(rt)) rt.forEach((x) => { if (x && x.name != null) tags[x.name] = x.value; });
+    else if (rt && typeof rt === 'object') Object.assign(tags, rt);
+    let content = tags.content || '';
+    let campaign = tags.campaign || '';
+    // Rezerve (drošs): ja tagu nav (opened/clicked), sasaista pēc email_id ar oriģinālo 'sent'
+    if ((!content || !campaign) && emailId) {
+      const ev = loadEvents().find((e) => e.t === 'sent' && e.id === emailId);
+      if (ev) { content = content || ev.content || ''; campaign = campaign || ev.campaign || ''; }
+    }
+    if (type === 'opened' || type === 'clicked') log('resend-wh', type, 'id=' + emailId, 'tagKeys=' + Object.keys(tags).join(','), '-> content=' + (content || '(nezināms)')); // TEMP diag
+    recordEvent({ t: type, email: (to||'').toLowerCase(), content, campaign, id: emailId, at: Date.now() });
     // atzīmē store atrakstīšanos/sūdzību
     if (type === 'complained' || type === 'bounced') {
       const s = loadStore(); if (s[(to||'').toLowerCase()]) { s[(to||'').toLowerCase()].unsub = true; saveStore(s); }
