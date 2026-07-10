@@ -106,8 +106,8 @@ function unsubToken(email){ return crypto.createHmac('sha256', UNSUB_SECRET).upd
 function unsubUrl(email){ return `${REMINDER_BASE}/calc-unsub?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`; }
 
 // ---- HTML (e-pasta drošs, zīmola) ----
-function renderHtml(def, c){
-  const link = `${OFFER_LINK}?utm_source=resend&utm_medium=email&utm_campaign=${def.camp}&utm_content=${def.content}`;
+function renderHtml(def, c, utmC){
+  const link = `${OFFER_LINK}?utm_source=resend&utm_medium=email&utm_campaign=${def.camp}&utm_content=${utmC||def.content}`;
   const unsub = unsubUrl(c.email);
   const bodyP = def.body.map(p => `<p style="margin:0 0 16px;font-size:14.5px;line-height:1.62;color:#3a3a3a;">${fill(p, c)}</p>`).join('');
   const aside = def.aside ? `<p style="margin:2px 0 18px;font-size:14px;color:#173A2C;background:#F7F0DC;border-radius:8px;padding:11px 14px;line-height:1.5;">${fill(def.aside, c)}</p>` : '';
@@ -128,30 +128,30 @@ function renderHtml(def, c){
       </td></tr>
     </table></td></tr></table>`;
 }
-function renderText(def, c){
+function renderText(def, c, utmC){
   return fill(def.hi, c) + '\n\n' + def.body.map(p => fill(p, c).replace(/<[^>]+>/g,'')).join('\n\n')
     + (def.aside ? '\n\n' + fill(def.aside, c) : '')
-    + `\n\n${def.btn}: ${OFFER_LINK}?utm_source=resend&utm_medium=email&utm_campaign=${def.camp}&utm_content=${def.content}`
+    + `\n\n${def.btn}: ${OFFER_LINK}?utm_source=resend&utm_medium=email&utm_campaign=${def.camp}&utm_content=${utmC||def.content}`
     + (def.sign ? '\n\n' + fill(def.sign, c).replace(/<[^>]+>/g,'') : '')
     + `\n\nAtrakstīties: ${unsubUrl(c.email)}`;
 }
 
-function buildEmail(type, c){
+function buildEmail(type, c, utmC){
   const def = TEMPLATES[type];
-  return { subject: fill(def.subject, c), html: renderHtml(def, c), text: renderText(def, c), def };
+  return { subject: fill(def.subject, c), html: renderHtml(def, c, utmC), text: renderText(def, c, utmC), def };
 }
 
 // ---- Sūtīšana (Resend, ar List-Unsubscribe + tags trackingam) ----
-async function sendReminder(c, type){
+async function sendReminder(c, type, utmC){
   if (!RESEND_API_KEY) throw new Error('nav RESEND_API_KEY');
-  const { subject, html, text, def } = buildEmail(type, c);
+  const { subject, html, text, def } = buildEmail(type, c, utmC);
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: FROM, to: [c.email], subject, html, text,
       headers: { 'List-Unsubscribe': `<${unsubUrl(c.email)}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
-      tags: [{ name: 'campaign', value: def.camp }, { name: 'content', value: def.content }]
+      tags: [{ name: 'campaign', value: def.camp }, { name: 'content', value: utmC || def.content }]
     })
   });
   if (!r.ok) throw new Error(`Resend ${r.status}: ${(await r.text()).slice(0,160)}`);
@@ -221,19 +221,8 @@ function handleResendWebhook(body){
     const type = (body && body.type || '').replace('email.', '');
     const d = body && body.data || {};
     const to = Array.isArray(d.to) ? d.to[0] : d.to;
-    // Resend tags var būt masīvs [{name,value}] VAI objekts {name:value} — apstrādā abus
-    const tags = {};
-    const rt = d.tags;
-    if (Array.isArray(rt)) rt.forEach((x) => { if (x && x.name != null) tags[x.name] = x.value; });
-    else if (rt && typeof rt === 'object') Object.assign(tags, rt);
-    let content = tags.content || '';
-    let campaign = tags.campaign || '';
-    // Rezerve (drošs): ja webhookā nav tagu, sasaista pēc email_id ar oriģinālo 'sent' notikumu
-    if ((!content || !campaign) && d.email_id) {
-      const ev = loadEvents().find((e) => e.t === 'sent' && e.id === d.email_id);
-      if (ev) { content = content || ev.content || ''; campaign = campaign || ev.campaign || ''; }
-    }
-    recordEvent({ t: type, email: (to||'').toLowerCase(), content, campaign, id: d.email_id || '', at: Date.now() });
+    const tags = {}; (d.tags || []).forEach(x => { tags[x.name] = x.value; });
+    recordEvent({ t: type, email: (to||'').toLowerCase(), content: tags.content || '', campaign: tags.campaign || '', id: d.email_id || '', at: Date.now() });
     // atzīmē store atrakstīšanos/sūdzību
     if (type === 'complained' || type === 'bounced') {
       const s = loadStore(); if (s[(to||'').toLowerCase()]) { s[(to||'').toLowerCase()].unsub = true; saveStore(s); }
@@ -290,21 +279,6 @@ function upsertContact(email, name, gender, expiry){
   saveStore(s);
 }
 
-// ---- Kontakta noņemšana (pēc izvēles pārceļ uz citu e-pastu) — admin tīrīšanai ----
-function removeContact(email, replaceWith){
-  const k = (email||'').trim().toLowerCase(); if (!k) return { removed: false };
-  const s = loadStore();
-  const existed = !!s[k];
-  const rk = (replaceWith||'').trim().toLowerCase();
-  if (rk && rk.indexOf('@') > 0 && s[k]) {
-    // pārceļ ierakstu uz jauno e-pastu (ja jaunais vēl nav — nepārraksta esošu)
-    if (!s[rk]) s[rk] = { ...s[k] };
-  }
-  delete s[k];
-  saveStore(s);
-  return { removed: existed, movedTo: (rk && rk.indexOf('@') > 0) ? rk : null };
-}
-
 // ---- Express integrācija ----
 function wireReminders(app, deps){
   const requireAdmin = (deps && deps.requireAdmin) || ((req,res)=>true);
@@ -315,23 +289,6 @@ function wireReminders(app, deps){
     res.send(`<div style="font-family:Arial;max-width:480px;margin:60px auto;text-align:center;color:#173A2C;"><h2>${ok?'Tu esi atrakstīts':'Saite nederīga'}</h2><p>${ok?'Vairs nesūtīsim atgādinājumus. Ja tā bija kļūda - raksti info@martinsbidins.com.':'Lūdzu izmanto saiti no e-pasta.'}</p></div>`);
   });
   app.get('/calc-reports', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; res.json(getReports()); });
-  // SEED: ielādē kontaktus Volume (PII nav repo). POST {contacts:{email:{name,gender,expiry,sent,unsub}}, mode:'merge'|'replace'}
-  app.post('/calc-seed', require('express').json({ limit: '8mb' }), (req, res) => {
-    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
-    const incoming = (req.body && req.body.contacts) || {};
-    const mode = (req.body && req.body.mode) === 'replace' ? 'replace' : 'merge';
-    const s = mode === 'replace' ? {} : loadStore();
-    let added = 0;
-    for (const email of Object.keys(incoming)) {
-      const k = String(email).trim().toLowerCase(); if (!k || k.indexOf('@') < 1) continue;
-      if (mode === 'merge' && s[k]) continue; // nepārraksta jau esošos (saglabā sent vēsturi)
-      const c = incoming[email] || {};
-      s[k] = { name: c.name || '', gender: c.gender === 'm' ? 'm' : 'f', expiry: c.expiry || null, sent: c.sent || {}, unsub: !!c.unsub };
-      added++;
-    }
-    saveStore(s);
-    res.json({ ok: true, mode, added, total: Object.keys(s).length });
-  });
   app.post('/calc-run', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; runReminders().then(r => res.json(r||{})); }); // manuāls trigers
   // TESTS: visi 5 e-pasti uz vienu adresi. /calc-test?to=info@martinsbidins.com&g=m&name=Mārtiņš
   app.post('/calc-test', async (req, res) => {
@@ -345,8 +302,29 @@ function wireReminders(app, deps){
     }
     res.json({ to, sent: out });
   });
+  // BROADCAST: sūta VIENU template segmentam (piem. winback iesaistītajiem). Body: {type, utmContent, contacts:[{email,name,gender}]}
+  // Es kontrolēju batch izmēru + pacingu, POstējot pa daļām. Suppression: atrakstījušies izlaisti.
+  app.post('/calc-broadcast', require('express').json({ limit: '4mb' }), async (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const { type, utmContent, contacts } = req.body || {};
+    if (!TEMPLATES[type] || !Array.isArray(contacts)) return res.status(400).json({ error: 'vajag type + contacts[]' });
+    const store = loadStore();
+    const out = { sent: 0, skipped: 0, errors: 0 };
+    for (const c of contacts) {
+      const em = String(c.email || '').trim().toLowerCase();
+      if (!em || em.indexOf('@') < 1) { out.skipped++; continue; }
+      if (store[em] && store[em].unsub) { out.skipped++; continue; }
+      try {
+        const r = await sendReminder({ email: em, name: c.name || '', gender: c.gender || 'f' }, type, utmContent);
+        recordEvent({ t: 'sent', email: em, content: utmContent || TEMPLATES[type].content, campaign: TEMPLATES[type].camp, id: r.id, at: Date.now() });
+        out.sent++;
+        await new Promise(x => setTimeout(x, 350));
+      } catch (e) { out.errors++; log('broadcast kļūda', em, e.message); }
+    }
+    res.json(out);
+  });
   // dienas cikls
   if (ENABLED) setInterval(() => runReminders().catch(e => log('cikls', e.message)), 60*60*1000); // ik stundu (viļņi pa MAX_PER_RUN)
 }
 
-module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, TEMPLATES };
+module.exports = { wireReminders, runReminders, upsertContact, recordConversion, buildEmail, getReports, TEMPLATES };
