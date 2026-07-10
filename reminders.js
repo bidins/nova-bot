@@ -115,7 +115,7 @@ function renderHtml(def, c){
   const ps = def.ps ? `<p style="margin:16px 0 0;font-size:13px;color:#8a8a7a;font-style:italic;">${fill(def.ps, c)}</p>` : '';
   return `<table width="100%" cellpadding="0" cellspacing="0" style="background:#F7F0DC;padding:26px 0;font-family:Arial,Helvetica,sans-serif;"><tr><td align="center">
     <table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
-      <tr><td style="text-align:center;font-size:13px;font-weight:bold;letter-spacing:2.5px;color:#173A2C;padding:0 0 18px;">MĀRTIŅŠ BIDIŅŠ</td></tr>
+      <tr><td style="text-align:center;padding:0 0 18px;"><img src="https://go.martinsbidins.com/mb-logo.png" alt="Martins Bidins" width="200" style="display:block;margin:0 auto;border:0;height:auto;outline:none;text-decoration:none;"></td></tr>
       <tr><td style="background:#ffffff;border-radius:16px;padding:30px 30px 26px;">
         <p style="margin:0 0 15px;font-size:16px;color:#0D1B2A;font-weight:bold;">${fill(def.hi, c)}</p>
         ${bodyP}${aside}
