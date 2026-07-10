@@ -31,18 +31,21 @@ function loadEvents(){ try { return JSON.parse(fs.readFileSync(CALC_EVENTS_FILE,
 function saveEvents(e){ try { fs.writeFileSync(CALC_EVENTS_FILE, JSON.stringify(e)); } catch (err) { log('events save', err.message); } }
 
 // ---- Dzimtes aizpilde ----
-// Uzrunas locījums (vokatīvs): vīriešiem noņem beigu -s/-š (Jānis->Jāni, Roberts->Robert, Mārtiņš->Mārtiņ).
-// Sievietēm vokatīvs = nominatīvs (Anna->Anna). Vairāku vārdu gadījumā loka tikai pirmo.
+// Tikai PIRMAIS vārds, pareizā reģistrā (DB var būt "ILMĀRS TOŠENS" -> "Ilmārs")
+function firstName(name){
+  const f = String(name || '').trim().split(/\s+/)[0];
+  return f ? f.charAt(0).toUpperCase() + f.slice(1).toLowerCase() : '';
+}
+// Uzrunas locījums (vokatīvs): vīriešiem noņem beigu -s/-š (Jānis->Jāni, Ilmārs->Ilmār, Mārtiņš->Mārtiņ).
+// Sievietēm = nominatīvs (Anna->Anna). Vienmēr tikai pirmais vārds + pareizs reģistrs.
 function vocative(name, g){
-  const n = (name || '').trim();
-  if (!n || g !== 'm') return n;
-  const first = n.split(/\s+/)[0];
-  const voc = first.replace(/[sš]$/, '');
-  return n.replace(first, voc);
+  const nm = firstName(name);
+  if (!nm || g !== 'm') return nm;
+  return nm.replace(/[sš]$/, ''); // nm jau title-case -> beigu s/š ir mazie
 }
 function fill(s, c){
   const g = c.gender === 'm' ? 'm' : 'f'; // neskaidrs -> sieviete (noklusējums)
-  return String(s)
+  const out = String(s)
     .split('{VARDS}').join(vocative(c.name, g))
     .split('{SVEIC}').join(g === 'f' ? 'Sveika' : 'Sveiks')
     .split('{DAL}').join(g === 'f' ? 'esošajai dalībniecei' : 'esošajam dalībniekam')
@@ -50,6 +53,8 @@ function fill(s, c){
     .split('{PIEDAL}').join(g === 'f' ? 'piedalījusies' : 'piedalījies')
     .split('{ATJ}').join(g === 'f' ? 'atjaunojusi' : 'atjaunojis')
     .split('{BIJIS}').join(g === 'f' ? 'bijusi' : 'bijis');
+  // tukša vārda gadījumā sakop: "Čau !" -> "Čau!", ", Tu jau" (tēmā) -> "Tu jau"
+  return out.replace(/\s+([!?.,])/g, '$1').replace(/^,\s*/, '').replace(/\s{2,}/g, ' ');
 }
 
 // ---- 5 e-pastu šabloni (tokeni aizpildās pēc dzimuma) ----
