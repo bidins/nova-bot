@@ -279,6 +279,21 @@ function upsertContact(email, name, gender, expiry){
   saveStore(s);
 }
 
+// ---- Kontakta noņemšana (pēc izvēles pārceļ uz citu e-pastu) — admin tīrīšanai ----
+function removeContact(email, replaceWith){
+  const k = (email||'').trim().toLowerCase(); if (!k) return { removed: false };
+  const s = loadStore();
+  const existed = !!s[k];
+  const rk = (replaceWith||'').trim().toLowerCase();
+  if (rk && rk.indexOf('@') > 0 && s[k]) {
+    // pārceļ ierakstu uz jauno e-pastu (ja jaunais vēl nav — nepārraksta esošu)
+    if (!s[rk]) s[rk] = { ...s[k] };
+  }
+  delete s[k];
+  saveStore(s);
+  return { removed: existed, movedTo: (rk && rk.indexOf('@') > 0) ? rk : null };
+}
+
 // ---- Express integrācija ----
 function wireReminders(app, deps){
   const requireAdmin = (deps && deps.requireAdmin) || ((req,res)=>true);
@@ -323,4 +338,4 @@ function wireReminders(app, deps){
   if (ENABLED) setInterval(() => runReminders().catch(e => log('cikls', e.message)), 60*60*1000); // ik stundu (viļņi pa MAX_PER_RUN)
 }
 
-module.exports = { wireReminders, runReminders, upsertContact, recordConversion, buildEmail, getReports, TEMPLATES };
+module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, TEMPLATES };

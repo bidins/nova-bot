@@ -1151,6 +1151,29 @@ app.post('/run-check', (req, res) => {
 
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
+
+// Noņem e-pastu no visām sistēmām (calc-access, jobs rinda, atgādinājumu saraksts). Pēc izvēles pārceļ uz citu e-pastu.
+// POST /purge-email { email, replaceWith? }
+app.post('/purge-email', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  const replaceWith = String((req.body && req.body.replaceWith) || '').trim().toLowerCase();
+  if (!email || email.indexOf('@') < 1) return res.status(400).json({ error: 'vajag email' });
+  // 1) calc-access hašs
+  const hashes = loadCalcHashes();
+  const h = sha256email(email);
+  const hadCalc = hashes[h] !== undefined;
+  if (hadCalc) { delete hashes[h]; saveCalcHashes(hashes); }
+  // 2) jobs rinda (atceļ visus gaidošos darbus šim e-pastam)
+  const before = loadJobs();
+  const kept = before.filter((j) => (j.email || '').toLowerCase() !== email);
+  const removedJobs = before.length - kept.length;
+  if (removedJobs) saveJobs(kept);
+  // 3) atgādinājumu saraksts (pēc izvēles pārceļ uz replaceWith)
+  const rem = reminders.removeContact(email, replaceWith);
+  log(`purge-email ${email}: calc=${hadCalc} jobs=${removedJobs} reminder=${JSON.stringify(rem)}${replaceWith ? ` -> ${replaceWith}` : ''}`);
+  res.json({ email, replaceWith: replaceWith || null, removed: { calcAccess: hadCalc, jobs: removedJobs, reminder: rem } });
+});
 // Kalkulatora allowlist — publisks (haši jau tāpat atklāti kalkulatora HTML), CORS atļauts.
 app.get('/calc-access.json', (_req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
