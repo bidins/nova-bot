@@ -31,10 +31,19 @@ function loadEvents(){ try { return JSON.parse(fs.readFileSync(CALC_EVENTS_FILE,
 function saveEvents(e){ try { fs.writeFileSync(CALC_EVENTS_FILE, JSON.stringify(e)); } catch (err) { log('events save', err.message); } }
 
 // ---- Dzimtes aizpilde ----
+// Uzrunas locījums (vokatīvs): vīriešiem noņem beigu -s/-š (Jānis->Jāni, Roberts->Robert, Mārtiņš->Mārtiņ).
+// Sievietēm vokatīvs = nominatīvs (Anna->Anna). Vairāku vārdu gadījumā loka tikai pirmo.
+function vocative(name, g){
+  const n = (name || '').trim();
+  if (!n || g !== 'm') return n;
+  const first = n.split(/\s+/)[0];
+  const voc = first.replace(/[sš]$/, '');
+  return n.replace(first, voc);
+}
 function fill(s, c){
   const g = c.gender === 'm' ? 'm' : 'f'; // neskaidrs -> sieviete (noklusējums)
   return String(s)
-    .split('{VARDS}').join(c.name || '')
+    .split('{VARDS}').join(vocative(c.name, g))
     .split('{SVEIC}').join(g === 'f' ? 'Sveika' : 'Sveiks')
     .split('{DAL}').join(g === 'f' ? 'esošajai dalībniecei' : 'esošajam dalībniekam')
     .split('{KLIENTS}').join(g === 'f' ? 'esošai klientei' : 'esošam klientam')
