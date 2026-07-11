@@ -397,18 +397,44 @@ async function sendReadyEmail(ctx) {
 // --------------------------------------------------------------------------
 // Nova automātika (Puppeteer)
 // --------------------------------------------------------------------------
-async function withBrowser(fn) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  });
+// Globāls Chromium mutex: TIKAI viens Chromium vienlaikus (novērš OOM/pthread mazā konteinerā).
+let browserQueue = Promise.resolve();
+function withBrowser(fn) {
+  const result = browserQueue.then(() => runWithBrowser(fn));
+  browserQueue = result.catch(() => {}); // ķēde turpinās arī pēc kļūdas
+  return result;
+}
+
+// Palaiž Chromium ar atkārtošanu (transient "Resource temporarily unavailable" gadījumā).
+async function launchBrowser(tries = 3) {
+  const args = [
+    '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+    '--no-zygote', '--disable-gpu', '--disable-extensions',
+    '--disable-background-networking', '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding', '--mute-audio',
+  ];
+  let lastErr;
+  for (let i = 1; i <= tries; i++) {
+    try {
+      return await puppeteer.launch({ headless: true, args });
+    } catch (e) {
+      lastErr = e;
+      log(`Chromium palaišana ${i}/${tries} neizdevās (${String(e.message).slice(0, 70)}) — gaidu un mēģinu vēlreiz`);
+      await wait(4000 * i); // backoff: 4s, 8s
+    }
+  }
+  throw lastErr;
+}
+
+async function runWithBrowser(fn) {
+  const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 1000 });
     page.setDefaultTimeout(30000);
     return await fn(page);
   } finally {
-    await browser.close();
+    try { await browser.close(); } catch {}
   }
 }
 
