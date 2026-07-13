@@ -1174,7 +1174,7 @@ function checkTick() {
 async function resyncJourneys() {
   if (!SHOPIFY_ADMIN_TOKEN) return;
   try {
-    const since = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString();
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
     const q = `query($q:String!){ orders(first:100, query:$q, sortKey:CREATED_AT, reverse:true){ edges { node { id customerJourneySummary { moments(first:20){ edges { node { ... on CustomerVisit { occurredAt source referrerUrl landingPage utmParameters { source medium campaign } } } } } } } } } }`;
     const data = await shopifyGraphql(q, { q: `created_at:>=${since}` });
     const nodes = ((data.orders && data.orders.edges) || []).map((e) => e.node);
@@ -1328,6 +1328,6 @@ app.listen(PORT, () => {
   setInterval(checkTick, 5 * 60 * 1000);
   log(`Dienas pārbaude: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | cutoff ${CHECK_CUTOFF}`);
   // atribūcijas journey re-sync (Shopify pilnais ceļš -> izlabo kanālus panelī)
-  setInterval(() => resyncJourneys(), 30 * 60 * 1000);
+  setInterval(() => resyncJourneys(), 3 * 60 * 60 * 1000); // ik 3h (nav daudz pirkumu)
   setTimeout(() => resyncJourneys(), 3 * 60 * 1000); // pirmā palaišana drīz pēc starta
 });
