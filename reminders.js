@@ -320,6 +320,16 @@ function wireReminders(app, deps){
     res.send(`<div style="font-family:Arial;max-width:480px;margin:60px auto;text-align:center;color:#173A2C;"><h2>${ok?'Tu esi atrakstīts':'Saite nederīga'}</h2><p>${ok?'Vairs nesūtīsim atgādinājumus. Ja tā bija kļūda - raksti info@martinsbidins.com.':'Lūdzu izmanto saiti no e-pasta.'}</p></div>`);
   });
   app.get('/calc-reports', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; res.json(getReports()); });
+  // Viena kontakta notikumi (vai atvēra/klikšķināja) + store stāvoklis. GET /calc-contact?email=X
+  app.get('/calc-contact', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const em = String(req.query.email || '').trim().toLowerCase();
+    if (!em) return res.status(400).json({ error: 'vajag email' });
+    const events = loadEvents().filter((e) => (e.email || '').toLowerCase() === em);
+    const counts = {};
+    for (const e of events) counts[e.t] = (counts[e.t] || 0) + 1;
+    res.json({ email: em, store: loadStore()[em] || null, eventCounts: counts, events: events.slice(-40) });
+  });
   app.post('/calc-run', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; runReminders().then(r => res.json(r||{})); }); // manuāls trigers
   // TESTS: visi 5 e-pasti uz vienu adresi. /calc-test?to=info@martinsbidins.com&g=m&name=Mārtiņš
   app.post('/calc-test', async (req, res) => {
