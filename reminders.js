@@ -339,6 +339,56 @@ function wireReminders(app, deps){
     upsertContact(k, name || '', gender || 'f', expiry || null);
     res.json({ ok: true, email: k, store: loadStore()[k] || null });
   });
+  // Pamesto/nesamaksāto grozu atgūšana. POST /calc-recover {contacts:[{email,product,recoverUrl}]}
+  app.post('/calc-recover', require('express').json({ limit: '1mb' }), async (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const contacts = Array.isArray(req.body && req.body.contacts) ? req.body.contacts : [];
+    if (!contacts.length) return res.status(400).json({ error: 'vajag contacts[]' });
+    let sent = 0, errors = 0; const results = [];
+    for (const c of contacts) {
+      const email = String(c.email || '').trim().toLowerCase();
+      const recoverUrl = String(c.recoverUrl || '').trim();
+      if (!email || email.indexOf('@') < 1 || !recoverUrl) { errors++; results.push({ email, error: 'nederīgs email/recoverUrl' }); continue; }
+      const product = c.product || 'projekts';
+      const link = recoverUrl + (recoverUrl.indexOf('?') >= 0 ? '&' : '?') + 'utm_source=resend&utm_medium=email&utm_campaign=abandoned&utm_content=abandoned_recovery';
+      const unsub = unsubUrl(email);
+      const subject = `Tavs ${product} gaida 💚`;
+      const p1 = `Pamanīju, ka vakar biji pavisam tuvu - <b>${product}</b> jau bija Tavā grozā, bet apmaksa palika nepabeigta.`;
+      const p2 = `Ja kaut kas aizķērās vai radās jautājums - atraksti, palīdzēšu. Bet ja vienkārši pietrūka pēdējā klikšķa, vari turpināt tieši no tās vietas, kur apstājies:`;
+      const html = `<table width="100%" cellpadding="0" cellspacing="0" style="background:#F7F0DC;padding:26px 0;font-family:Arial,Helvetica,sans-serif;"><tr><td align="center">
+    <table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
+      <tr><td style="text-align:center;padding:0 0 18px;"><img src="https://go.martinsbidins.com/mb-logo.png" alt="Martins Bidins" width="200" style="display:block;margin:0 auto;border:0;height:auto;outline:none;text-decoration:none;"></td></tr>
+      <tr><td style="background:#ffffff;border-radius:16px;padding:30px 30px 26px;">
+        <p style="margin:0 0 15px;font-size:16px;color:#0D1B2A;font-weight:bold;">Čau!</p>
+        <p style="margin:0 0 16px;font-size:14.5px;line-height:1.62;color:#3a3a3a;">${p1}</p>
+        <p style="margin:0 0 16px;font-size:14.5px;line-height:1.62;color:#3a3a3a;">${p2}</p>
+        <table cellpadding="0" cellspacing="0" style="margin:22px auto 6px;"><tr><td style="background:#C9781C;border-radius:10px;"><a href="${link}" style="display:inline-block;padding:14px 30px;font-size:14.5px;font-weight:bold;color:#ffffff;text-decoration:none;">Pabeigt pieteikšanos &rarr;</a></td></tr></table>
+        <p style="margin:20px 0 0;font-size:14px;color:#555;">Redzēsimies projektā!<br><b>Mārtiņš</b></p>
+      </td></tr>
+      <tr><td style="text-align:center;font-size:11.5px;color:#9a9384;line-height:1.7;padding:18px 10px 2px;">
+        Martins Bidins &middot; Rīga, Latvija<br>
+        <a href="${unsub}" style="color:#9a9384;">Atrakstīties</a>
+      </td></tr>
+    </table></td></tr></table>`;
+      const text = `Čau!\n\nPamanīju, ka vakar biji pavisam tuvu - ${product} jau bija Tavā grozā, bet apmaksa palika nepabeigta.\n\nJa kaut kas aizķērās vai radās jautājums - atraksti, palīdzēšu. Bet ja vienkārši pietrūka pēdējā klikšķa, vari turpināt tieši no tās vietas, kur apstājies:\n\nPabeigt pieteikšanos: ${link}\n\nRedzēsimies projektā!\nMārtiņš\n\nAtrakstīties: ${unsub}`;
+      try {
+        const r = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: FROM, to: [email], subject, html, text,
+            headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
+            tags: [{ name: 'campaign', value: 'abandoned' }, { name: 'content', value: 'abandoned_recovery' }]
+          })
+        });
+        if (!r.ok) throw new Error(`Resend ${r.status}: ${(await r.text()).slice(0,140)}`);
+        const data = await r.json().catch(() => ({}));
+        recordEvent({ t: 'sent', email, content: 'abandoned_recovery', campaign: 'abandoned', id: data.id || '', at: Date.now() });
+        sent++; results.push({ email, id: data.id || null });
+      } catch (e) { errors++; results.push({ email, error: e.message }); }
+    }
+    res.json({ sent, errors, results });
+  });
   app.post('/calc-run', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; runReminders().then(r => res.json(r||{})); }); // manuāls trigers
   // TESTS: visi 5 e-pasti uz vienu adresi. /calc-test?to=info@martinsbidins.com&g=m&name=Mārtiņš
   app.post('/calc-test', async (req, res) => {
