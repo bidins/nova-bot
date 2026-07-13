@@ -330,6 +330,15 @@ function wireReminders(app, deps){
     for (const e of events) counts[e.t] = (counts[e.t] || 0) + 1;
     res.json({ email: em, store: loadStore()[em] || null, eventCounts: counts, events: events.slice(-40) });
   });
+  // Pievieno/atjauno vienu kontaktu atgādinājumu sarakstam. POST /calc-add {email,name,gender,expiry}
+  app.post('/calc-add', require('express').json(), (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const { email, name, gender, expiry } = req.body || {};
+    const k = String(email || '').trim().toLowerCase();
+    if (!k || k.indexOf('@') < 1) return res.status(400).json({ error: 'vajag derīgu email' });
+    upsertContact(k, name || '', gender || 'f', expiry || null);
+    res.json({ ok: true, email: k, store: loadStore()[k] || null });
+  });
   app.post('/calc-run', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; runReminders().then(r => res.json(r||{})); }); // manuāls trigers
   // TESTS: visi 5 e-pasti uz vienu adresi. /calc-test?to=info@martinsbidins.com&g=m&name=Mārtiņš
   app.post('/calc-test', async (req, res) => {
