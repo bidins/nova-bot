@@ -405,6 +405,17 @@ function wireReminders(app, deps){
     upsertContact(k, name || '', gender || 'f', expiry || null);
     res.json({ ok: true, email: k, store: loadStore()[k] || null });
   });
+  // E2E tests atribūcijas signālam. POST /attrib-test {email,campaign} — parāda vai env ielasīts + izšauj signālu.
+  app.post('/attrib-test', require('express').json(), (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const email = String((req.body && req.body.email) || req.query.email || '').trim().toLowerCase();
+    const campaign = String((req.body && req.body.campaign) || req.query.campaign || 'winback');
+    if (!email) return res.status(400).json({ error: 'vajag email' });
+    const configured = !!(ATTRIB_SIGNAL_URL && ATTRIB_SIGNAL_KEY);
+    _attribSent.delete(`${campaign}:${email}`); // atļauj testu atkārtot
+    sendAttribSignal(email, campaign);
+    res.json({ configured, fired: configured, email, campaign, url: ATTRIB_SIGNAL_URL || null });
+  });
   // Pamesto/nesamaksāto grozu atgūšana. POST /calc-recover {contacts:[{email,product,recoverUrl}]}
   app.post('/calc-recover', require('express').json({ limit: '1mb' }), async (req, res) => {
     if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
