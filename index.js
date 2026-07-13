@@ -1111,8 +1111,7 @@ function reprocessOrder(node) {
 // Pamesto/nesamaksāto grozu atgūšana (auto) — reminders.sendRecovery + Resend
 // --------------------------------------------------------------------------
 const ABANDONED_SENT_FILE = path.join(path.dirname(QUEUE_FILE), 'abandoned-sent.json'); // {checkoutId:{email,at,id}}
-const LAST_ABANDONED_FILE = path.join(path.dirname(QUEUE_FILE), 'last-abandoned.txt');
-const ABAND_GRACE_H = Number(process.env.ABANDONED_GRACE_HOURS || 3);  // negaidām sūtīt ātrāk par tik h (dodam laiku pabeigt pašiem)
+const ABAND_GRACE_MIN = Number(process.env.ABANDONED_GRACE_MIN || 30); // sūtām ~tik min pēc pamešanas (dodam laiku pabeigt pašiem)
 const ABAND_MAX_H = Number(process.env.ABANDONED_MAX_HOURS || 48);     // vecākus par tik grozus neaiztiekam
 function loadAbandonedSent() { try { return JSON.parse(fs.readFileSync(ABANDONED_SENT_FILE, 'utf8')); } catch { return {}; } }
 function saveAbandonedSent(s) { try { fs.writeFileSync(ABANDONED_SENT_FILE, JSON.stringify(s)); } catch (e) { log('abandoned-sent save', e.message); } }
@@ -1143,11 +1142,11 @@ async function runAbandonedRecovery(opts = {}) {
   const out = { sent: 0, skipped: 0, sends: [] };
   for (const co of cos) {
     const email = ((co.customer && co.customer.email) || '').toLowerCase();
-    const ageH = (now - new Date(co.createdAt).getTime()) / 3600000;
-    if (co.completedAt) { out.skipped++; continue; }                              // nopirkts
+    const ageMin = (now - new Date(co.createdAt).getTime()) / 60000;
+    if (co.completedAt) { out.skipped++; continue; }                                          // nopirkts
     if (!email || email.indexOf('@') < 1) { out.skipped++; continue; }
-    if (sentStore[co.id]) { out.skipped++; continue; }                            // jau sūtīts
-    if (ageH < ABAND_GRACE_H || ageH > ABAND_MAX_H) { out.skipped++; continue; }  // pārāk svaigs / par vecu
+    if (sentStore[co.id]) { out.skipped++; continue; }                                        // jau sūtīts
+    if (ageMin < ABAND_GRACE_MIN || ageMin > ABAND_MAX_H * 60) { out.skipped++; continue; }   // pārāk svaigs / par vecu
     const locale = ((co.customer && co.customer.locale) || '').toLowerCase();
     const inScope = !ALLOWED_LOCALES.length || ALLOWED_LOCALES.some((l) => locale.startsWith(l));
     if (!inScope) { out.skipped++; continue; }                                    // ne-LV
@@ -1166,20 +1165,17 @@ async function runAbandonedRecovery(opts = {}) {
   return out;
 }
 
-// Plānotājs: 9/13/17/21 (Rīgas laiks), dedublē pēc slota.
-function abandonedTick() {
+// Plānotājs: nepārtraukti (ik 5 min); grozs tiek noķerts ~ABAND_GRACE_MIN pēc pamešanas.
+// Dedup ir per-checkout (sentStore), tāpēc slots nav vajadzīgs. Re-entrances aizsargs pret pārklāšanos.
+let abandonedRunning = false;
+async function abandonedTick() {
+  if (abandonedRunning) return;
+  abandonedRunning = true;
   try {
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Riga', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
-    const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
-    const dateStr = `${p.year}-${p.month}-${p.day}`;
-    if (![9, 13, 17, 21].includes(Number(p.hour)) || Number(p.minute) >= 6) return;
-    const slot = `${dateStr}-${p.hour}`;
-    let last = ''; try { last = fs.readFileSync(LAST_ABANDONED_FILE, 'utf8').trim(); } catch {}
-    if (slot === last) return;
-    try { fs.writeFileSync(LAST_ABANDONED_FILE, slot); } catch {}
-    log(`Pamestie grozi: slots ${slot}`);
-    runAbandonedRecovery().then((r) => log(`Pamestie grozi: nosūtīti ${r.sent}, izlaisti ${r.skipped}`)).catch((e) => log('runAbandonedRecovery kļūda:', e.message));
+    const r = await runAbandonedRecovery();
+    if (r.sent) log(`Pamestie grozi: nosūtīti ${r.sent}, izlaisti ${r.skipped}`);
   } catch (e) { log('abandonedTick kļūda:', e.message); }
+  finally { abandonedRunning = false; }
 }
 
 async function runDailyCheck(force) {
@@ -1388,7 +1384,8 @@ app.listen(PORT, () => {
   // dienas pārbaudes plānotājs (Rīgas laiks: pirms 14.07 -> 10/14/18/22; pēc -> 10)
   setInterval(checkTick, 5 * 60 * 1000);
   log(`Dienas pārbaude: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | cutoff ${CHECK_CUTOFF}`);
-  // pamesto grozu atgūšanas plānotājs (Rīgas laiks: 9/13/17/21)
+  // pamesto grozu atgūšanas plānotājs (nepārtraukti ik 5 min; sūta ~ABAND_GRACE_MIN pēc pamešanas)
   setInterval(abandonedTick, 5 * 60 * 1000);
-  log(`Pamesto grozu atgūšana: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva (9/13/17/21)' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | grace ${ABAND_GRACE_H}h, max ${ABAND_MAX_H}h`);
+  setTimeout(() => abandonedTick().catch(() => {}), 25000); // viens cikls drīz pēc starta
+  log(`Pamesto grozu atgūšana: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva (ik 5 min)' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | grace ${ABAND_GRACE_MIN}min, max ${ABAND_MAX_H}h`);
 });
