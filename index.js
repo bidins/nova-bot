@@ -1107,6 +1107,81 @@ function reprocessOrder(node) {
   });
 }
 
+// --------------------------------------------------------------------------
+// Pamesto/nesamaksāto grozu atgūšana (auto) — reminders.sendRecovery + Resend
+// --------------------------------------------------------------------------
+const ABANDONED_SENT_FILE = path.join(path.dirname(QUEUE_FILE), 'abandoned-sent.json'); // {checkoutId:{email,at,id}}
+const LAST_ABANDONED_FILE = path.join(path.dirname(QUEUE_FILE), 'last-abandoned.txt');
+const ABAND_GRACE_H = Number(process.env.ABANDONED_GRACE_HOURS || 3);  // negaidām sūtīt ātrāk par tik h (dodam laiku pabeigt pašiem)
+const ABAND_MAX_H = Number(process.env.ABANDONED_MAX_HOURS || 48);     // vecākus par tik grozus neaiztiekam
+function loadAbandonedSent() { try { return JSON.parse(fs.readFileSync(ABANDONED_SENT_FILE, 'utf8')); } catch { return {}; } }
+function saveAbandonedSent(s) { try { fs.writeFileSync(ABANDONED_SENT_FILE, JSON.stringify(s)); } catch (e) { log('abandoned-sent save', e.message); } }
+
+async function fetchAbandonedCheckouts(sinceDate) {
+  const query = `query($q: String!) { abandonedCheckouts(first: 50, query: $q, sortKey: CREATED_AT, reverse: true) {
+    edges { node { id createdAt completedAt abandonedCheckoutUrl customer { email locale } lineItems(first: 5) { edges { node { title } } } } } } }`;
+  const r = await fetch(`https://${SHOP_DOMAIN}/admin/api/2025-01/graphql.json`, {
+    method: 'POST',
+    headers: { 'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables: { q: `created_at:>=${sinceDate}` } }),
+  });
+  const j = await r.json();
+  if (!j.data || !j.data.abandonedCheckouts) throw new Error('Shopify abandoned: ' + JSON.stringify(j.errors || j).slice(0, 200));
+  return j.data.abandonedCheckouts.edges.map((e) => e.node);
+}
+
+async function runAbandonedRecovery(opts = {}) {
+  if (!SHOPIFY_ADMIN_TOKEN) { log('Pamestie grozi: nav SHOPIFY_ADMIN_TOKEN — izlaižu'); return { sent: 0, skipped: 0 }; }
+  const dry = !!opts.dry;
+  const now = Date.now();
+  const sinceDate = new Date(now - (ABAND_MAX_H + 6) * 3600 * 1000).toISOString().slice(0, 10);
+  const cos = await fetchAbandonedCheckouts(sinceDate);
+  // e-pasti, kas pa to laiku tomēr samaksājuši (cits checkout) — neaiztiekam
+  let paidEmails = new Set();
+  try { const paid = await fetchRecentPaidOrders(new Date(now - (ABAND_MAX_H + 6) * 3600 * 1000).toISOString()); paidEmails = new Set(paid.map((o) => (o.email || '').toLowerCase())); } catch (e) { log('Pamestie grozi: paid-check kļūda', e.message); }
+  const sentStore = loadAbandonedSent();
+  const out = { sent: 0, skipped: 0, sends: [] };
+  for (const co of cos) {
+    const email = ((co.customer && co.customer.email) || '').toLowerCase();
+    const ageH = (now - new Date(co.createdAt).getTime()) / 3600000;
+    if (co.completedAt) { out.skipped++; continue; }                              // nopirkts
+    if (!email || email.indexOf('@') < 1) { out.skipped++; continue; }
+    if (sentStore[co.id]) { out.skipped++; continue; }                            // jau sūtīts
+    if (ageH < ABAND_GRACE_H || ageH > ABAND_MAX_H) { out.skipped++; continue; }  // pārāk svaigs / par vecu
+    const locale = ((co.customer && co.customer.locale) || '').toLowerCase();
+    const inScope = !ALLOWED_LOCALES.length || ALLOWED_LOCALES.some((l) => locale.startsWith(l));
+    if (!inScope) { out.skipped++; continue; }                                    // ne-LV
+    if (paidEmails.has(email)) { out.skipped++; sentStore[co.id] = { email, at: now, skip: 'paid' }; continue; }
+    const product = ((co.lineItems.edges[0] || {}).node || {}).title || 'projekts';
+    const recoverUrl = co.abandonedCheckoutUrl;
+    if (dry) { out.sends.push({ email, product }); out.sent++; continue; }
+    try {
+      const { id } = await reminders.sendRecovery({ email, product, recoverUrl });
+      sentStore[co.id] = { email, at: now, id };
+      out.sent++; out.sends.push({ email, product, id });
+      log(`Pamestais grozs: atgūšana nosūtīta ${email} (${product})`);
+    } catch (e) { out.skipped++; log(`Pamestais grozs kļūda ${email}: ${e.message}`); }
+  }
+  if (!dry) saveAbandonedSent(sentStore);
+  return out;
+}
+
+// Plānotājs: 9/13/17/21 (Rīgas laiks), dedublē pēc slota.
+function abandonedTick() {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Riga', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+    const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+    const dateStr = `${p.year}-${p.month}-${p.day}`;
+    if (![9, 13, 17, 21].includes(Number(p.hour)) || Number(p.minute) >= 6) return;
+    const slot = `${dateStr}-${p.hour}`;
+    let last = ''; try { last = fs.readFileSync(LAST_ABANDONED_FILE, 'utf8').trim(); } catch {}
+    if (slot === last) return;
+    try { fs.writeFileSync(LAST_ABANDONED_FILE, slot); } catch {}
+    log(`Pamestie grozi: slots ${slot}`);
+    runAbandonedRecovery().then((r) => log(`Pamestie grozi: nosūtīti ${r.sent}, izlaisti ${r.skipped}`)).catch((e) => log('runAbandonedRecovery kļūda:', e.message));
+  } catch (e) { log('abandonedTick kļūda:', e.message); }
+}
+
 async function runDailyCheck(force) {
   if (!SHOPIFY_ADMIN_TOKEN) { log('Dienas pārbaude: nav SHOPIFY_ADMIN_TOKEN — izlaižu'); return; }
   const recipient = process.env.ADMIN_EMAIL || NOVA_EMAIL;
@@ -1166,37 +1241,6 @@ function checkTick() {
     log(`Dienas pārbaude: slots ${slot}`);
     runDailyCheck();
   } catch (e) { log('checkTick kļūda:', e.message); }
-}
-
-// Journey re-sync: pull Shopify's FULL customer journey (GraphQL) for recent orders
-// and post it to the attribution panel, which corrects channels the REST webhook
-// under-attributed (e.g. an ad click that landed as "Nezināms").
-async function resyncJourneys() {
-  if (!SHOPIFY_ADMIN_TOKEN) return;
-  try {
-    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-    const q = `query($q:String!){ orders(first:100, query:$q, sortKey:CREATED_AT, reverse:true){ edges { node { id customerJourneySummary { moments(first:20){ edges { node { ... on CustomerVisit { occurredAt source referrerUrl landingPage utmParameters { source medium campaign } } } } } } } } } }`;
-    const data = await shopifyGraphql(q, { q: `created_at:>=${since}` });
-    const nodes = ((data.orders && data.orders.edges) || []).map((e) => e.node);
-    let sent = 0;
-    for (const n of nodes) {
-      const cjs = n.customerJourneySummary;
-      const moments = ((cjs && cjs.moments && cjs.moments.edges) || []).map((e) => e.node).filter(Boolean);
-      if (!moments.length) continue;
-      const shopify_order_id = String(n.id).split('/').pop();
-      try {
-        await fetch('https://martinsbidins-platform.vercel.app/api/webhooks/attribution/journey?k=8bc7e22c26f8c67e312830ee8e26649336483488', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shopify_order_id, moments }),
-        });
-        sent++;
-      } catch {}
-    }
-    log(`Journey re-sync: ${sent} pasūtījumu ceļi nosūtīti atribūcijai`);
-  } catch (e) {
-    log('Journey re-sync kļūda:', e.message);
-  }
 }
 
 // --------------------------------------------------------------------------
@@ -1284,6 +1328,23 @@ app.post('/run-check', (req, res) => {
   runDailyCheck(true).catch((e) => log('/run-check kļūda:', e.message));
 });
 
+// Manuāli palaist pamesto grozu atgūšanu. ?dry=1 = tikai parāda, kam sūtītu (nesūta). Aizsargāts.
+app.post('/run-abandoned', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try { res.json(await runAbandonedRecovery({ dry: req.query.dry === '1' || (req.body && req.body.dry) })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Atzīmē pamesto grozu checkout ID kā jau apstrādātus (lai auto nesūta atkārtoti). {ids:[...]}
+app.post('/abandoned-mark', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  const s = loadAbandonedSent();
+  for (const id of ids) if (id) s[id] = { at: Date.now(), skip: 'manual' };
+  saveAbandonedSent(s);
+  res.json({ marked: ids.length, total: Object.keys(s).length });
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
@@ -1327,7 +1388,7 @@ app.listen(PORT, () => {
   // dienas pārbaudes plānotājs (Rīgas laiks: pirms 14.07 -> 10/14/18/22; pēc -> 10)
   setInterval(checkTick, 5 * 60 * 1000);
   log(`Dienas pārbaude: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | cutoff ${CHECK_CUTOFF}`);
-  // atribūcijas journey re-sync (Shopify pilnais ceļš -> izlabo kanālus panelī)
-  setInterval(() => resyncJourneys(), 3 * 60 * 60 * 1000); // ik 3h (nav daudz pirkumu)
-  setTimeout(() => resyncJourneys(), 3 * 60 * 1000); // pirmā palaišana drīz pēc starta
+  // pamesto grozu atgūšanas plānotājs (Rīgas laiks: 9/13/17/21)
+  setInterval(abandonedTick, 5 * 60 * 1000);
+  log(`Pamesto grozu atgūšana: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva (9/13/17/21)' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | grace ${ABAND_GRACE_H}h, max ${ABAND_MAX_H}h`);
 });
