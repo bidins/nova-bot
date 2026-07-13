@@ -1168,6 +1168,37 @@ function checkTick() {
   } catch (e) { log('checkTick kļūda:', e.message); }
 }
 
+// Journey re-sync: pull Shopify's FULL customer journey (GraphQL) for recent orders
+// and post it to the attribution panel, which corrects channels the REST webhook
+// under-attributed (e.g. an ad click that landed as "Nezināms").
+async function resyncJourneys() {
+  if (!SHOPIFY_ADMIN_TOKEN) return;
+  try {
+    const since = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString();
+    const q = `query($q:String!){ orders(first:100, query:$q, sortKey:CREATED_AT, reverse:true){ edges { node { id customerJourneySummary { moments(first:20){ edges { node { ... on CustomerVisit { occurredAt source referrerUrl landingPage utmParameters { source medium campaign } } } } } } } } } }`;
+    const data = await shopifyGraphql(q, { q: `created_at:>=${since}` });
+    const nodes = ((data.orders && data.orders.edges) || []).map((e) => e.node);
+    let sent = 0;
+    for (const n of nodes) {
+      const cjs = n.customerJourneySummary;
+      const moments = ((cjs && cjs.moments && cjs.moments.edges) || []).map((e) => e.node).filter(Boolean);
+      if (!moments.length) continue;
+      const shopify_order_id = String(n.id).split('/').pop();
+      try {
+        await fetch('https://martinsbidins-platform.vercel.app/api/webhooks/attribution/journey?k=8bc7e22c26f8c67e312830ee8e26649336483488', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shopify_order_id, moments }),
+        });
+        sent++;
+      } catch {}
+    }
+    log(`Journey re-sync: ${sent} pasūtījumu ceļi nosūtīti atribūcijai`);
+  } catch (e) {
+    log('Journey re-sync kļūda:', e.message);
+  }
+}
+
 // --------------------------------------------------------------------------
 // HTTP serveris
 // --------------------------------------------------------------------------
@@ -1296,4 +1327,7 @@ app.listen(PORT, () => {
   // dienas pārbaudes plānotājs (Rīgas laiks: pirms 14.07 -> 10/14/18/22; pēc -> 10)
   setInterval(checkTick, 5 * 60 * 1000);
   log(`Dienas pārbaude: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | cutoff ${CHECK_CUTOFF}`);
+  // atribūcijas journey re-sync (Shopify pilnais ceļš -> izlabo kanālus panelī)
+  setInterval(() => resyncJourneys(), 30 * 60 * 1000);
+  setTimeout(() => resyncJourneys(), 3 * 60 * 1000); // pirmā palaišana drīz pēc starta
 });
