@@ -269,19 +269,23 @@ function recordEvent(ev){ const e = loadEvents(); e.push(ev); saveEvents(e); }
 
 // Resend webhook: email.delivered / email.opened / email.clicked / email.bounced / email.complained
 // Nosūta atribūcijas signālu platformai (winback). Dedup atmiņā — viens e-pasts vienreiz sesijā.
+// opts: {type:'opened'|'clicked'|'delivered', at:ISO} — neobligāti, ceļa detaļām panelī.
 const _attribSent = new Set();
-function sendAttribSignal(email, campaign){
+function sendAttribSignal(email, campaign, opts){
   try {
     if (!ATTRIB_SIGNAL_URL || !ATTRIB_SIGNAL_KEY || !email) return;
     const key = `${campaign}:${email}`;
     if (_attribSent.has(key)) return;   // jau nosūtīts šai palaišanai
     _attribSent.add(key);
     const url = ATTRIB_SIGNAL_URL + (ATTRIB_SIGNAL_URL.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(ATTRIB_SIGNAL_KEY);
+    const payload = { email, channel: 'Winback', campaign };
+    if (opts && opts.type) payload.type = opts.type;
+    if (opts && opts.at) payload.at = opts.at;
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, channel: 'Winback', campaign })
-    }).then((r) => log('attrib-signal', email, r.status)).catch((e) => log('attrib-signal kļūda', email, e.message));
+      body: JSON.stringify(payload)
+    }).then((r) => log('attrib-signal', email, campaign, opts && opts.type || '', r.status)).catch((e) => log('attrib-signal kļūda', email, e.message));
   } catch (e) { log('attrib-signal', e.message); }
 }
 
@@ -306,8 +310,11 @@ function handleResendWebhook(body){
     if (type === 'opened' || type === 'clicked') log('resend-wh', type, 'id=' + emailId, 'tagKeys=' + Object.keys(tags).join(','), '-> content=' + (content || '(nezināms)')); // TEMP diag
     recordEvent({ t: type, email: (to||'').toLowerCase(), content, campaign, id: emailId, at: Date.now() });
     // Atribūcija: e-pasts atgrieza klientu (atvēra/klikšķināja) -> signāls panelim ar kanālu "Winback".
-    // Panelim viss (renewal + winback) = "Winback"; mūsu pusē campaign glabā īsto (renewal/winback).
-    if ((type === 'opened' || type === 'clicked') && (campaign === 'winback' || campaign === 'renewal')) sendAttribSignal((to||'').toLowerCase(), campaign);
+    // Panelim viss (renewal + winback) = "Winback"; campaign glabā konkrēto (winback / renewal:expired_3).
+    if ((type === 'opened' || type === 'clicked') && (campaign === 'winback' || campaign === 'renewal')) {
+      const campLabel = campaign === 'renewal' ? ('renewal:' + (content || '?')) : campaign;
+      sendAttribSignal((to||'').toLowerCase(), campLabel, { type, at: new Date().toISOString() });
+    }
     // atzīmē store atrakstīšanos/sūdzību
     if (type === 'complained' || type === 'bounced') {
       const s = loadStore(); if (s[(to||'').toLowerCase()]) { s[(to||'').toLowerCase()].unsub = true; saveStore(s); }
