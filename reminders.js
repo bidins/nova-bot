@@ -305,8 +305,9 @@ function handleResendWebhook(body){
     }
     if (type === 'opened' || type === 'clicked') log('resend-wh', type, 'id=' + emailId, 'tagKeys=' + Object.keys(tags).join(','), '-> content=' + (content || '(nezināms)')); // TEMP diag
     recordEvent({ t: type, email: (to||'').toLowerCase(), content, campaign, id: emailId, at: Date.now() });
-    // Atribūcija: winback atvēra/klikšķināja -> signāls platformas panelim (pārklasificē vājo pasūtījumu par "Winback")
-    if ((type === 'opened' || type === 'clicked') && campaign === 'winback') sendAttribSignal((to||'').toLowerCase(), 'winback');
+    // Atribūcija: e-pasts atgrieza klientu (atvēra/klikšķināja) -> signāls panelim ar kanālu "Winback".
+    // Panelim viss (renewal + winback) = "Winback"; mūsu pusē campaign glabā īsto (renewal/winback).
+    if ((type === 'opened' || type === 'clicked') && (campaign === 'winback' || campaign === 'renewal')) sendAttribSignal((to||'').toLowerCase(), campaign);
     // atzīmē store atrakstīšanos/sūdzību
     if (type === 'complained' || type === 'bounced') {
       const s = loadStore(); if (s[(to||'').toLowerCase()]) { s[(to||'').toLowerCase()].unsub = true; saveStore(s); }
