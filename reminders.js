@@ -19,6 +19,9 @@ const OFFER_LINK       = 'https://shop.martinsbidins.com/lv-lv/products/piedavaj
 const MAX_PER_RUN      = Number(process.env.REMINDER_MAX_PER_RUN || 40);   // vilnis: cik sūta vienā ciklā (piegājamībai)
 const ENABLED          = process.env.CALC_REMINDERS_ENABLED === '1';        // apzināti jāieslēdz, lai sūtītu
 const WINBACK_DAYS     = 30; // beidzies vairāk kā 30 dienas -> winback (ne sekvence)
+// Atribūcijas signāls: winback opened/clicked -> POST uz platformas endpointu (atslēga env, NE publiskajā repo)
+const ATTRIB_SIGNAL_URL = process.env.ATTRIB_SIGNAL_URL || '';   // piem. https://martinsbidins-platform.vercel.app/api/webhooks/attribution/email-signal
+const ATTRIB_SIGNAL_KEY = process.env.ATTRIB_SIGNAL_KEY || '';
 
 const log = (...a) => console.log(`[${new Date().toISOString()}][reminders]`, ...a);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -265,6 +268,23 @@ async function runReminders(){
 function recordEvent(ev){ const e = loadEvents(); e.push(ev); saveEvents(e); }
 
 // Resend webhook: email.delivered / email.opened / email.clicked / email.bounced / email.complained
+// Nosūta atribūcijas signālu platformai (winback). Dedup atmiņā — viens e-pasts vienreiz sesijā.
+const _attribSent = new Set();
+function sendAttribSignal(email, campaign){
+  try {
+    if (!ATTRIB_SIGNAL_URL || !ATTRIB_SIGNAL_KEY || !email) return;
+    const key = `${campaign}:${email}`;
+    if (_attribSent.has(key)) return;   // jau nosūtīts šai palaišanai
+    _attribSent.add(key);
+    const url = ATTRIB_SIGNAL_URL + (ATTRIB_SIGNAL_URL.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(ATTRIB_SIGNAL_KEY);
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, channel: 'Winback', campaign })
+    }).then((r) => log('attrib-signal', email, r.status)).catch((e) => log('attrib-signal kļūda', email, e.message));
+  } catch (e) { log('attrib-signal', e.message); }
+}
+
 function handleResendWebhook(body){
   try {
     const type = (body && body.type || '').replace('email.', '');
@@ -285,6 +305,8 @@ function handleResendWebhook(body){
     }
     if (type === 'opened' || type === 'clicked') log('resend-wh', type, 'id=' + emailId, 'tagKeys=' + Object.keys(tags).join(','), '-> content=' + (content || '(nezināms)')); // TEMP diag
     recordEvent({ t: type, email: (to||'').toLowerCase(), content, campaign, id: emailId, at: Date.now() });
+    // Atribūcija: winback atvēra/klikšķināja -> signāls platformas panelim (pārklasificē vājo pasūtījumu par "Winback")
+    if ((type === 'opened' || type === 'clicked') && campaign === 'winback') sendAttribSignal((to||'').toLowerCase(), 'winback');
     // atzīmē store atrakstīšanos/sūdzību
     if (type === 'complained' || type === 'bounced') {
       const s = loadStore(); if (s[(to||'').toLowerCase()]) { s[(to||'').toLowerCase()].unsub = true; saveStore(s); }
