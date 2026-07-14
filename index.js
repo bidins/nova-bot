@@ -153,6 +153,15 @@ const PRODUCT_COURSE_MAP = {
     ],
   },
 
+  // === PAPILDINĀJUMS (upgrade: Uztura + treniņi, +8 nedēļas) ===
+  // Pircējs JAU ir klients ar [190,196,159] → bots "flatten" (visu uzreiz) un termiņu tikai PAGARINA (EXPIRY_POLICY=extend).
+  // Rezultāts abiem: pilnā kursu kopa + 90 dienas. Bez welcomeMsg (ziņu "Par projektu" jau saņēma).
+  // €20 — esošajiem klientiem (maksāja €50, 4 ned.)
+  '53363956220170': { label: 'Papildinājums €20 (esošajiem)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
+
+  // €30 — Vasaras pircējiem (maksāja €49)
+  '53363956252938': { label: 'Papildinājums €30 (Vasaras)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
+
   // Pievieno citus produktus šeit
 };
 
