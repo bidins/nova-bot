@@ -229,17 +229,20 @@ async function sendBranded(c, opts){
   if (!email || email.indexOf('@') < 1) throw new Error('nederīgs email');
   const nm = c.name || '';
   const g = c.gender || guessGenderLV(nm);
-  const greet = opts.greeting === false ? '' : (g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!');
+  // dzimtes tokens: [[sieviete|vīrietis]] -> izvēlas otro tikai ja g==='m', citādi pirmo (neskaidrs -> sieviete)
+  const gx = (s) => String(s).replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, (_, ff, mm) => (g === 'm' ? mm : ff));
+  const greetRaw = opts.greeting === false ? '' : (typeof opts.greeting === 'string' ? opts.greeting : (g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!'));
+  const greet = gx(greetRaw);
   const unsub = unsubUrl(email);
   const campaign = opts.campaign || 'orientation';
   const utmC = opts.utmContent || campaign;
-  const subject = (opts.subject || '').replace('{name}', nm);
-  const fillP = (p) => String(p).replace('{name}', nm);
+  const subject = gx((opts.subject || '').replace('{name}', nm));
+  const fillP = (p) => gx(String(p).replace('{name}', nm));
   const greetHtml = greet ? `<p style="margin:0 0 15px;font-size:16px;color:#0D1B2A;font-weight:bold;">${greet}</p>` : '';
   const paras = (opts.paragraphs || []).map((p) => `<p style="margin:0 0 16px;font-size:14.5px;line-height:1.62;color:#3a3a3a;">${fillP(p)}</p>`).join('');
   const btn = (opts.button && opts.button.url)
     ? `<table cellpadding="0" cellspacing="0" style="margin:22px auto 6px;"><tr><td style="background:#C9781C;border-radius:10px;"><a href="${opts.button.url}" style="display:inline-block;padding:14px 30px;font-size:14.5px;font-weight:bold;color:#ffffff;text-decoration:none;">${opts.button.label || 'Atvērt'} &rarr;</a></td></tr></table>` : '';
-  const sign = opts.sign ? `<p style="margin:20px 0 0;font-size:14px;color:#555;">${opts.sign}</p>` : '';
+  const sign = opts.sign ? `<p style="margin:20px 0 0;font-size:14px;color:#555;">${gx(opts.sign)}</p>` : '';
   const html = `<table width="100%" cellpadding="0" cellspacing="0" style="background:#F7F0DC;padding:26px 0;font-family:Arial,Helvetica,sans-serif;"><tr><td align="center">
     <table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
       <tr><td style="text-align:center;padding:0 0 18px;"><img src="https://go.martinsbidins.com/mb-logo.png" alt="Martins Bidins" width="200" style="display:block;margin:0 auto;border:0;height:auto;outline:none;text-decoration:none;"></td></tr>
@@ -254,7 +257,7 @@ async function sendBranded(c, opts){
   const textBody = (opts.paragraphs || []).map((p) => fillP(p).replace(/<[^>]+>/g, '')).join('\n\n');
   const text = (greet ? greet + '\n\n' : '') + textBody
     + ((opts.button && opts.button.url) ? `\n\n${opts.button.label || 'Atvērt'}: ${opts.button.url}` : '')
-    + (opts.sign ? '\n\n' + opts.sign.replace(/<[^>]+>/g, '') : '')
+    + (opts.sign ? '\n\n' + gx(opts.sign).replace(/<[^>]+>/g, '') : '')
     + `\n\nAtrakstīties: ${unsub}`;
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
