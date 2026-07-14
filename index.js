@@ -666,7 +666,8 @@ async function changeExpiry(page, clientId, courseId, newExpires) {
 
 /** Pēc pieslēgšanas: pauzē kursus, kuru expires_at ir PAGĀTNĒ (beigušies, šoreiz nepagarināti).
  *  Mūža pieeja (expires "—"/tukšs) un jau apturētie (NOT STOPPED sarkans) — netiek aiztikti. */
-async function pauseExpiredCourses(page, clientId) {
+async function pauseExpiredCourses(page, clientId, opts = {}) {
+  const dry = opts.dry || DRY_RUN;
   await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
   await wait(2500);
   // gaida "Courses" tabulu (ar EXPIRES AT + LIFE LONG galvenēm)
@@ -675,18 +676,40 @@ async function pauseExpiredCourses(page, clientId) {
     return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
   }), { timeout: 12000 }).catch(() => {});
 
-  const expired = await page.evaluate(() => {
+  // ja Courses tabula lapota — palielina rādīto skaitu (per-page selektors), lai visi kursi vienā lapā
+  await page.evaluate(() => {
+    const t = [...document.querySelectorAll('table')].find((tb) => {
+      const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
+      return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
+    });
+    if (!t) return;
+    const box = t.closest('[dusk$="-index-component"]') || t.closest('div');
+    const sel = box ? box.querySelector('select') : null;
+    if (sel) {
+      const opts = [...sel.options].map((o) => parseInt(o.value, 10)).filter((n) => !isNaN(n));
+      const max = Math.max(...opts, 0);
+      if (max && String(max) !== sel.value) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(sel, String(max));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+  });
+  await wait(2500);
+
+  const diag = await page.evaluate(() => {
     const today = new Date().toISOString().slice(0, 10);
     const t = [...document.querySelectorAll('table')].find((tb) => {
       const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
       return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
     });
-    if (!t) return [];
+    if (!t) return { expired: [], totalRows: 0, hasNext: false };
     const hs = [...t.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
     const expIdx = hs.findIndex((h) => h.includes('EXPIRES AT'));
     const nsIdx = hs.findIndex((h) => h.includes('NOT STOPPED'));
     const out = [];
-    for (const tr of t.querySelectorAll('tbody tr')) {
+    const rows = [...t.querySelectorAll('tbody tr')];
+    for (const tr of rows) {
       const id = (tr.getAttribute('dusk') || '').replace('-row', '');
       if (!id) continue;
       const tds = [...tr.querySelectorAll('td')];
@@ -700,10 +723,16 @@ async function pauseExpiredCourses(page, clientId) {
       if (!notStopped) continue;
       out.push({ id, expires: raw });
     }
-    return out;
+    // pagination: vai ir "Next" poga, kas nav disabled
+    const box = t.closest('[dusk$="-index-component"]') || t.closest('div');
+    const nextBtn = box ? [...box.querySelectorAll('button,a')].find((b) => /next|nākam/i.test(b.textContent || '') || (b.getAttribute('rel') === 'next')) : null;
+    const hasNext = !!(nextBtn && !nextBtn.disabled && nextBtn.getAttribute('aria-disabled') !== 'true');
+    return { expired: out, totalRows: rows.length, hasNext };
   });
-
-  if (!expired.length) { log('  Pause: nav beigušos aktīvu kursu (visi aktīvi/mūža/jau apturēti)'); return { paused: [] }; }
+  const expired = diag.expired;
+  log(`  Pause diag: klients ${clientId} — kursu rindas=${diag.totalRows}, beigušies+aktīvi=${expired.length}, nākamā lapa=${diag.hasNext}`);
+  if (opts.diagOnly) return { diag, expired };
+  if (!expired.length) { log('  Pause: nav beigušos aktīvu kursu (visi aktīvi/mūža/jau apturēti)'); return { paused: [], diag }; }
   log(`  Pause: beigušies kursi ${expired.map((e) => e.id).join(', ')} — apturu piekļuvi`);
 
   // ieķeksē visus beigušos
@@ -727,10 +756,10 @@ async function pauseExpiredCourses(page, clientId) {
   await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
   await wait(1000);
 
-  if (DRY_RUN) {
-    log(`  [DRY_RUN] Pause ${expired.map((e) => e.id).join(',')} (neizpildu)`);
+  if (dry) {
+    log(`  [DRY] Pause ${expired.map((e) => e.id).join(',')} (neizpildu)`);
     await page.click('[dusk="cancel-action-button"]').catch(() => {});
-    return { dryRun: true, expired: expired.map((e) => e.id) };
+    return { dryRun: true, expired: expired.map((e) => e.id), diag };
   }
 
   await page.click('[dusk="confirm-action-button"]');
@@ -1401,6 +1430,23 @@ app.get('/ensure-forum', async (req, res) => {
       const clientId = await findClientId(page, email);
       if (!clientId) return { error: 'nav klienta', email };
       const r = await ensureForumPost(page, clientId, { dry });
+      return { clientId, email, ...r };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Aptur beigušos (nepagarinātos) kursus klientam. ?dry=1 = tikai parāda, ko pauzētu (+diag). GET /run-pause?email=X
+app.get('/run-pause', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  const dry = req.query.dry === '1';
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { error: 'nav klienta', email };
+      const r = await pauseExpiredCourses(page, clientId, { dry, diagOnly: dry });
       return { clientId, email, ...r };
     });
     res.json(out);
