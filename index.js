@@ -915,6 +915,41 @@ async function ensureForumPost(page, clientId, opts = {}) {
   return { changed: after === true, confirmed: after === true, before: cur, after };
 }
 
+/** Nomaina klienta e-pastu Nova (Edit forma). Atrod lauku pēc pašreizējās vērtības (=vecais e-pasts), droši. */
+async function setNovaClientEmail(page, clientId, oldEmail, newEmail) {
+  await page.goto(`${NOVA_BASE}/resources/clients/${clientId}/edit`, { waitUntil: 'networkidle2' });
+  await wait(2200);
+  const set = await page.evaluate((oldE, newE) => {
+    const inp = [...document.querySelectorAll('input')].find((i) => (i.value || '').trim().toLowerCase() === oldE.toLowerCase());
+    if (!inp) return { ok: false, reason: 'nav atrasts lauks ar veco e-pastu' };
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(inp, newE);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    inp.dispatchEvent(new Event('blur', { bubbles: true }));
+    return { ok: true };
+  }, oldEmail, newEmail);
+  if (!set.ok) return { changed: false, error: set.reason };
+  await wait(500);
+  await page.evaluate(() => {
+    const b = document.querySelector('[dusk="update-button"]') || document.querySelector('[dusk="update-and-continue-button"]')
+      || [...document.querySelectorAll('button')].find((x) => /update|save|saglabāt/i.test(x.textContent || ''));
+    if (b) b.click();
+  });
+  await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+  await wait(1500);
+  const after = await page.evaluate(async (id) => {
+    try {
+      const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+      const j = await r.json();
+      const f = (j.resource && j.resource.fields) || [];
+      const x = f.find((y) => y.attribute === 'email');
+      return x ? x.value : null;
+    } catch { return null; }
+  }, clientId);
+  return { changed: (after || '').toLowerCase() === newEmail.toLowerCase(), after };
+}
+
 /** Izveido ziņu klientam Nova (Create Message forma). */
 async function createNovaMessage(page, clientId, title, text) {
   await page.goto(`${NOVA_BASE}/resources/messages/new?viaResource=clients&viaResourceId=${clientId}&viaRelationship=messages&relationshipType=hasMany`, { waitUntil: 'networkidle2' });
@@ -1492,6 +1527,26 @@ app.get('/run-pause', async (req, res) => {
       if (!clientId) return { error: 'nav klienta', email };
       const r = await pauseExpiredCourses(page, clientId, { dry, diagOnly: dry });
       return { clientId, email, ...r };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Nomaina klienta e-pastu Nova. Drošības pārbaude: ja jaunais jau eksistē → NEMAINA (lai nedublē). GET /change-email?old=X&new=Y
+app.get('/change-email', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const oldE = String(req.query.old || '').trim().toLowerCase();
+  const newE = String(req.query.new || '').trim().toLowerCase();
+  if (!oldE || !newE || newE.indexOf('@') < 1) return res.status(400).json({ error: 'vajag derīgu old + new' });
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const oldId = await findClientId(page, oldE);
+      if (!oldId) return { error: 'vecais e-pasts nav atrasts Nova', old: oldE };
+      const newId = await findClientId(page, newE);
+      if (newId) return { error: 'jaunais e-pasts JAU eksistē Nova (ID ' + newId + ') — nemainu, lai neveidotu dublikātu', oldId, newId };
+      const r = await setNovaClientEmail(page, oldId, oldE, newE);
+      return { oldId, old: oldE, new: newE, ...r };
     });
     res.json(out);
   } catch (e) { res.status(500).json({ error: e.message }); }
