@@ -1560,7 +1560,7 @@ app.get('/fix-order', async (req, res) => {
   const newEmail = String(req.query.email || '').trim().toLowerCase();
   if (!orderName) return res.status(400).json({ error: 'vajag order' });
   try {
-    const q = `query($q:String!){orders(first:1,query:$q){edges{node{id name email customerLocale landingSite customer{firstName} lineItems(first:10){edges{node{variant{id}}}}}}}}`;
+    const q = `query($q:String!){orders(first:1,query:$q){edges{node{id name email customerLocale customer{firstName} lineItems(first:10){edges{node{variant{id}}}}}}}}`;
     const data = await shopifyGraphql(q, { q: `name:${orderName}` });
     const node = data && data.orders && data.orders.edges[0] && data.orders.edges[0].node;
     if (!node) return res.json({ error: 'pasūtījums nav atrasts', order: orderName });
@@ -1577,7 +1577,6 @@ app.get('/fix-order', async (req, res) => {
       email,
       customer_locale: node.customerLocale,
       customer: { first_name: node.customer && node.customer.firstName },
-      landing_site: node.landingSite,
       line_items: (node.lineItems.edges || []).map((e) => ({ variant_id: variantIdOf(e.node.variant && e.node.variant.id) })),
     };
     processOrder(order); // fona: pieslēdz, fulfill, e-pasti, forums, pauze, orientation
