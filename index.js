@@ -850,27 +850,22 @@ async function ensureForumPost(page, clientId, opts = {}) {
   if (cur === true) return { changed: false, already: true };
   await page.goto(`${NOVA_BASE}/resources/clients/${clientId}/edit`, { waitUntil: 'networkidle2' });
   await wait(2200);
-  const found = await page.evaluate(() => {
-    const wrap = document.querySelector('[dusk="can_post_in_forum"]');
-    const cb = (wrap && wrap.querySelector('input[type=checkbox]')) || document.querySelector('input[name="can_post_in_forum"]');
-    // diagnostika: kā lauks renderēts
-    const probe = { url: location.href, forumDusk: [], checkboxes: [], switches: [], hasForm: !!document.querySelector('form') };
-    document.querySelectorAll('[dusk]').forEach((el) => { const d = el.getAttribute('dusk') || ''; if (/forum|post/i.test(d)) probe.forumDusk.push(d); });
-    document.querySelectorAll('input[type=checkbox]').forEach((el) => probe.checkboxes.push({ name: el.getAttribute('name') || '', dusk: el.getAttribute('dusk') || '', id: el.id || '', wrap: (el.closest('[dusk]') && el.closest('[dusk]').getAttribute('dusk')) || '' }));
-    document.querySelectorAll('[role=switch], button[aria-checked]').forEach((el) => probe.switches.push({ dusk: el.getAttribute('dusk') || '', aria: el.getAttribute('aria-checked'), wrap: (el.closest('[dusk]') && el.closest('[dusk]').getAttribute('dusk')) || '' }));
-    const w2 = document.querySelector('[dusk^="can_post_in_forum"][dusk$="boolean-field"]');
-    probe.wrapperHtml = w2 ? w2.outerHTML.slice(0, 600) : null;
-    return cb ? { found: true, checked: cb.checked, probe } : { found: false, probe };
-  });
-  if (opts.dry) return { dry: true, current: cur, found: found.found, checked: found.checked, probe: found.probe };
-  if (!found.found) return { changed: false, error: 'checkbox nav atrasts (can_post_in_forum)', probe: found.probe };
+  // Nova boolean-field = <div role="checkbox" data-state="checked|unchecked" dusk="can_post_in_forum-...-boolean-field">
+  const SEL = '[dusk^="can_post_in_forum"][dusk$="boolean-field"]';
+  const found = await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return { found: false };
+    const checked = el.getAttribute('data-state') === 'checked' || el.getAttribute('aria-checked') === 'true';
+    return { found: true, checked };
+  }, SEL);
+  if (opts.dry) return { dry: true, current: cur, found: found.found, checked: found.checked };
+  if (!found.found) return { changed: false, error: 'lauks nav atrasts (can_post_in_forum boolean-field)' };
   if (!found.checked) {
-    await page.evaluate(() => {
-      const wrap = document.querySelector('[dusk="can_post_in_forum"]');
-      const cb = (wrap && wrap.querySelector('input[type=checkbox]')) || document.querySelector('input[name="can_post_in_forum"]');
-      if (cb && !cb.checked) cb.click();
-    });
-    await wait(400);
+    await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (el && el.getAttribute('data-state') !== 'checked') { el.scrollIntoView({ block: 'center' }); el.click(); }
+    }, SEL);
+    await wait(600);
   }
   await page.evaluate(() => {
     const b = document.querySelector('[dusk="update-button"]') || document.querySelector('[dusk="update-and-continue-button"]')
