@@ -1552,6 +1552,39 @@ app.get('/change-email', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Nomaina Shopify pasūtījuma e-pastu (ja dots) un pārapstrādā to (pieslēdz kursu jaunajam kontam + fulfill).
+// GET /fix-order?order=1094&email=jaunais@x.lv
+app.get('/fix-order', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const orderName = String(req.query.order || '').replace('#', '').trim();
+  const newEmail = String(req.query.email || '').trim().toLowerCase();
+  if (!orderName) return res.status(400).json({ error: 'vajag order' });
+  try {
+    const q = `query($q:String!){orders(first:1,query:$q){edges{node{id name email customerLocale landingSite customer{firstName} lineItems(first:10){edges{node{variant{id}}}}}}}}`;
+    const data = await shopifyGraphql(q, { q: `name:${orderName}` });
+    const node = data && data.orders && data.orders.edges[0] && data.orders.edges[0].node;
+    if (!node) return res.json({ error: 'pasūtījums nav atrasts', order: orderName });
+    let email = (node.email || '').toLowerCase();
+    if (newEmail && newEmail !== email) {
+      const m = `mutation($input:OrderInput!){orderUpdate(input:$input){order{id email} userErrors{field message}}}`;
+      const mr = await shopifyGraphql(m, { input: { id: node.id, email: newEmail } });
+      const ue = mr && mr.orderUpdate && mr.orderUpdate.userErrors;
+      if (ue && ue.length) return res.json({ error: 'orderUpdate kļūda', details: ue });
+      email = newEmail;
+    }
+    const order = {
+      id: node.id,
+      email,
+      customer_locale: node.customerLocale,
+      customer: { first_name: node.customer && node.customer.firstName },
+      landing_site: node.landingSite,
+      line_items: (node.lineItems.edges || []).map((e) => ({ variant_id: variantIdOf(e.node.variant && e.node.variant.id) })),
+    };
+    processOrder(order); // fona: pieslēdz, fulfill, e-pasti, forums, pauze, orientation
+    res.json({ ok: true, order: node.name, email, variants: order.line_items.map((l) => l.variant_id) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
