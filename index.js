@@ -853,10 +853,15 @@ async function ensureForumPost(page, clientId, opts = {}) {
   const found = await page.evaluate(() => {
     const wrap = document.querySelector('[dusk="can_post_in_forum"]');
     const cb = (wrap && wrap.querySelector('input[type=checkbox]')) || document.querySelector('input[name="can_post_in_forum"]');
-    return cb ? { found: true, checked: cb.checked } : { found: false };
+    // diagnostika: kā lauks renderēts
+    const probe = { url: location.href, forumDusk: [], checkboxes: [], switches: [], hasForm: !!document.querySelector('form') };
+    document.querySelectorAll('[dusk]').forEach((el) => { const d = el.getAttribute('dusk') || ''; if (/forum|post/i.test(d)) probe.forumDusk.push(d); });
+    document.querySelectorAll('input[type=checkbox]').forEach((el) => probe.checkboxes.push({ name: el.getAttribute('name') || '', dusk: el.getAttribute('dusk') || '', id: el.id || '', wrap: (el.closest('[dusk]') && el.closest('[dusk]').getAttribute('dusk')) || '' }));
+    document.querySelectorAll('[role=switch], button[aria-checked]').forEach((el) => probe.switches.push({ dusk: el.getAttribute('dusk') || '', aria: el.getAttribute('aria-checked'), wrap: (el.closest('[dusk]') && el.closest('[dusk]').getAttribute('dusk')) || '' }));
+    return cb ? { found: true, checked: cb.checked, probe } : { found: false, probe };
   });
-  if (!found.found) return { changed: false, error: 'checkbox nav atrasts (can_post_in_forum)' };
-  if (opts.dry) return { dry: true, current: cur, ...found };
+  if (opts.dry) return { dry: true, current: cur, found: found.found, checked: found.checked, probe: found.probe };
+  if (!found.found) return { changed: false, error: 'checkbox nav atrasts (can_post_in_forum)', probe: found.probe };
   if (!found.checked) {
     await page.evaluate(() => {
       const wrap = document.querySelector('[dusk="can_post_in_forum"]');
