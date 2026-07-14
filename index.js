@@ -676,8 +676,8 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
     return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
   }), { timeout: 12000 }).catch(() => {});
 
-  // ja Courses tabula lapota — palielina rādīto skaitu (per-page selektors), lai visi kursi vienā lapā
-  await page.evaluate(() => {
+  // per-page max (lai visi kursi vienā lapā — lapošana slēpa daļu)
+  const setPerPageMax = () => page.evaluate(() => {
     const t = [...document.querySelectorAll('table')].find((tb) => {
       const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
       return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
@@ -686,8 +686,8 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
     const box = t.closest('[dusk$="-index-component"]') || t.closest('div');
     const sel = box ? box.querySelector('select') : null;
     if (sel) {
-      const opts = [...sel.options].map((o) => parseInt(o.value, 10)).filter((n) => !isNaN(n));
-      const max = Math.max(...opts, 0);
+      const nums = [...sel.options].map((o) => parseInt(o.value, 10)).filter((n) => !isNaN(n));
+      const max = Math.max(...nums, 0);
       if (max && String(max) !== sel.value) {
         const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
         setter.call(sel, String(max));
@@ -695,9 +695,8 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
       }
     }
   });
-  await wait(2500);
-
-  const diag = await page.evaluate(() => {
+  // noskaidro beigušos+aktīvos (+diag)
+  const detect = () => page.evaluate(() => {
     const today = new Date().toISOString().slice(0, 10);
     const t = [...document.querySelectorAll('table')].find((tb) => {
       const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
@@ -716,57 +715,61 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
       const raw = tds[expIdx] ? tds[expIdx].textContent.trim() : '';
       const datePart = raw.slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}/.test(datePart)) continue; // mūža/tukšs (—) — neaiztiek
-      if (datePart >= today) continue; // vēl aktīvs (nākotne/šodien) — neaiztiek
-      // NOT STOPPED: zaļš = aktīvs (jāpauzē), sarkans = jau apturēts (izlaist — idempotence)
+      if (datePart >= today) continue; // vēl aktīvs — neaiztiek
       const svg = nsIdx >= 0 && tds[nsIdx] ? tds[nsIdx].querySelector('svg') : null;
       const notStopped = svg ? svg.classList.contains('text-green-500') : true;
-      if (!notStopped) continue;
+      if (!notStopped) continue; // sarkans = jau apturēts (idempotence)
       out.push({ id, expires: raw });
     }
-    // pagination: vai ir "Next" poga, kas nav disabled
     const box = t.closest('[dusk$="-index-component"]') || t.closest('div');
     const nextBtn = box ? [...box.querySelectorAll('button,a')].find((b) => /next|nākam/i.test(b.textContent || '') || (b.getAttribute('rel') === 'next')) : null;
     const hasNext = !!(nextBtn && !nextBtn.disabled && nextBtn.getAttribute('aria-disabled') !== 'true');
     return { expired: out, totalRows: rows.length, hasNext };
   });
+  const rescan = async () => { await setPerPageMax(); await wait(2200); return detect(); };
+
+  const diag = await rescan();
   const expired = diag.expired;
   log(`  Pause diag: klients ${clientId} — kursu rindas=${diag.totalRows}, beigušies+aktīvi=${expired.length}, nākamā lapa=${diag.hasNext}`);
   if (opts.diagOnly) return { diag, expired };
   if (!expired.length) { log('  Pause: nav beigušos aktīvu kursu (visi aktīvi/mūža/jau apturēti)'); return { paused: [], diag }; }
-  log(`  Pause: beigušies kursi ${expired.map((e) => e.id).join(', ')} — apturu piekļuvi`);
+  if (dry) { log(`  [DRY] Pauzētu ${expired.length}: ${expired.map((e) => e.id).join(',')}`); return { dryRun: true, expired: expired.map((e) => e.id), diag }; }
 
-  // ieķeksē visus beigušos
-  await page.evaluate((ids) => {
-    for (const id of ids) {
+  // pauzē PA VIENAM: Nova bulk-action izpildās tikai vienam ieķeksētajam, tāpēc ciklā ar re-scan
+  const pausedIds = [];
+  let cur = diag, guard = 0;
+  while (cur.expired.length && guard < 40) {
+    guard++;
+    const target = cur.expired[0].id;
+    if (pausedIds.includes(target)) { log(`  Pause: ${target} neapstājās — pārtraucu`); break; }
+    const checked = await page.evaluate((id) => {
       const el = document.querySelector(`[dusk="${id}-checkbox"]`);
-      if (el) { el.scrollIntoView({ block: 'center' }); (el.querySelector('input') || el).click(); }
-    }
-  }, expired.map((e) => e.id));
-  await wait(1000);
-
-  const ok = await page.evaluate(() => {
-    const s = [...document.querySelectorAll('select[dusk="action-select"]')].find((sel) => [...sel.options].some((o) => o.value === 'pause-access-client-to-course'));
-    if (!s) return false;
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
-    setter.call(s, 'pause-access-client-to-course');
-    s.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  });
-  if (!ok) throw new Error('Nav "Pause access" darbības');
-  await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
-  await wait(1000);
-
-  if (dry) {
-    log(`  [DRY] Pause ${expired.map((e) => e.id).join(',')} (neizpildu)`);
-    await page.click('[dusk="cancel-action-button"]').catch(() => {});
-    return { dryRun: true, expired: expired.map((e) => e.id), diag };
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      (el.querySelector('input') || el).click();
+      return true;
+    }, target);
+    if (!checked) { log(`  Pause: nav checkbox ${target} — pārtraucu`); break; }
+    await wait(500);
+    const ok = await page.evaluate(() => {
+      const s = [...document.querySelectorAll('select[dusk="action-select"]')].find((sel) => [...sel.options].some((o) => o.value === 'pause-access-client-to-course'));
+      if (!s) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, 'pause-access-client-to-course');
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    });
+    if (!ok) throw new Error('Nav "Pause access" darbības');
+    await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
+    await wait(700);
+    await page.click('[dusk="confirm-action-button"]');
+    await page.waitForFunction(() => !document.querySelector('[dusk="modal-backdrop"]'), { timeout: 15000 }).catch(() => {});
+    await wait(1200);
+    pausedIds.push(target);
+    cur = await rescan();
   }
-
-  await page.click('[dusk="confirm-action-button"]');
-  await page.waitForFunction(() => !document.querySelector('[dusk="modal-backdrop"]'), { timeout: 15000 }).catch(() => {});
-  await wait(1200);
-  log(`  Pause: apturēti ${expired.length} kursi (${expired.map((e) => e.id).join(', ')})`);
-  return { paused: expired.map((e) => e.id) };
+  log(`  Pause: apturēti ${pausedIds.length} kursi (${pausedIds.join(', ')})`);
+  return { paused: pausedIds, diag };
 }
 
 /** Pievieno VIENU kursu (viens action modālis = viens kurss). */
