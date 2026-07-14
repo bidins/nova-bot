@@ -1341,6 +1341,27 @@ app.post('/abandoned-mark', (req, res) => {
   res.json({ marked: ids.length, total: Object.keys(s).length });
 });
 
+// PAGAIDU read-only probe: izdrukā klienta Nova laukus (atrast foruma boolean nosaukumu). GET /probe-forum?email=X
+app.get('/probe-forum', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { error: 'nav klienta', email };
+      const fields = await page.evaluate(async (id) => {
+        const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+        const j = await r.json();
+        const f = (j.resource && j.resource.fields) || j.fields || [];
+        return f.map((y) => ({ attribute: y.attribute, name: y.name, component: y.component, value: y.value }));
+      }, clientId);
+      return { clientId, fields };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
