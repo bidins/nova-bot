@@ -798,6 +798,52 @@ async function getClientFirstName(page, clientId) {
   }, clientId);
 }
 
+/** Nolasa can_post_in_forum vērtību caur Nova API (true/false/null). */
+async function readCanPostInForum(page, clientId) {
+  return page.evaluate(async (id) => {
+    try {
+      const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+      const j = await r.json();
+      const f = (j.resource && j.resource.fields) || j.fields || [];
+      const x = f.find((y) => y.attribute === 'can_post_in_forum');
+      return x ? x.value : null;
+    } catch { return null; }
+  }, clientId);
+}
+
+/** Ieslēdz "Can Post In Forum" ja izslēgts (auto tikai pie platformas maksājuma; Shopify pircējiem netiek).
+ *  Idempotents: ja jau true → neaiztiek. opts.dry = tikai atrod checkbox, nesaglabā. Apstiprina pēc saglabāšanas. */
+async function ensureForumPost(page, clientId, opts = {}) {
+  const cur = await readCanPostInForum(page, clientId);
+  if (cur === true) return { changed: false, already: true };
+  await page.goto(`${NOVA_BASE}/resources/clients/${clientId}/edit`, { waitUntil: 'networkidle2' });
+  await wait(2200);
+  const found = await page.evaluate(() => {
+    const wrap = document.querySelector('[dusk="can_post_in_forum"]');
+    const cb = (wrap && wrap.querySelector('input[type=checkbox]')) || document.querySelector('input[name="can_post_in_forum"]');
+    return cb ? { found: true, checked: cb.checked } : { found: false };
+  });
+  if (!found.found) return { changed: false, error: 'checkbox nav atrasts (can_post_in_forum)' };
+  if (opts.dry) return { dry: true, current: cur, ...found };
+  if (!found.checked) {
+    await page.evaluate(() => {
+      const wrap = document.querySelector('[dusk="can_post_in_forum"]');
+      const cb = (wrap && wrap.querySelector('input[type=checkbox]')) || document.querySelector('input[name="can_post_in_forum"]');
+      if (cb && !cb.checked) cb.click();
+    });
+    await wait(400);
+  }
+  await page.evaluate(() => {
+    const b = document.querySelector('[dusk="update-button"]') || document.querySelector('[dusk="update-and-continue-button"]')
+      || [...document.querySelectorAll('button')].find((x) => /update|save|saglabāt/i.test(x.textContent || ''));
+    if (b) b.click();
+  });
+  await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+  await wait(1500);
+  const after = await readCanPostInForum(page, clientId);
+  return { changed: after === true, confirmed: after === true, before: cur, after };
+}
+
 /** Izveido ziņu klientam Nova (Create Message forma). */
 async function createNovaMessage(page, clientId, title, text) {
   await page.goto(`${NOVA_BASE}/resources/messages/new?viaResource=clients&viaResourceId=${clientId}&viaRelationship=messages&relationshipType=hasMany`, { waitUntil: 'networkidle2' });
@@ -857,9 +903,12 @@ async function addCoursesToClient(email, courseIds, expiresDate, meta = {}, opts
     }
     // iekšējā Nova ziņa (vienreiz, ja produktam definēta)
     await maybeSendNovaMessage(page, clientId, email, meta.welcomeMsg);
+    // ieslēdz foruma rakstīšanu, ja izslēgta (Shopify pircējiem auto netiek); idempotents
+    const forum = await ensureForumPost(page, clientId).catch((e) => { log('Forum kļūda:', e.message); return null; });
+    if (forum && forum.changed) log(`Forums ieslēgts klientam ${email} (ID ${clientId})`);
     // pēc pieslēgšanas: apturi beigušos (nepagarinātos) kursus; mūža/aktīvos neaiztiek
     const paused = await pauseExpiredCourses(page, clientId).catch((e) => { log('Pause kļūda:', e.message); return null; });
-    return { registered: true, clientId, done, flattened, paused: paused && paused.paused };
+    return { registered: true, clientId, done, flattened, forum: forum && (forum.changed ? 'ieslēgts' : (forum.already ? 'jau bija' : 'n/a')), paused: paused && paused.paused };
   });
 }
 
@@ -1341,22 +1390,18 @@ app.post('/abandoned-mark', (req, res) => {
   res.json({ marked: ids.length, total: Object.keys(s).length });
 });
 
-// PAGAIDU read-only probe: izdrukā klienta Nova laukus (atrast foruma boolean nosaukumu). GET /probe-forum?email=X
-app.get('/probe-forum', async (req, res) => {
+// Ieslēdz "Can Post In Forum" klientam (ja izslēgts). ?dry=1 = tikai atrod checkbox, nesaglabā. GET /ensure-forum?email=X
+app.get('/ensure-forum', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const email = String(req.query.email || '').trim().toLowerCase();
+  const dry = req.query.dry === '1';
   try {
     const out = await withBrowser(async (page) => {
       await login(page);
       const clientId = await findClientId(page, email);
       if (!clientId) return { error: 'nav klienta', email };
-      const fields = await page.evaluate(async (id) => {
-        const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
-        const j = await r.json();
-        const f = (j.resource && j.resource.fields) || j.fields || [];
-        return f.map((y) => ({ attribute: y.attribute, name: y.name, component: y.component, value: y.value }));
-      }, clientId);
-      return { clientId, fields };
+      const r = await ensureForumPost(page, clientId, { dry });
+      return { clientId, email, ...r };
     });
     res.json(out);
   } catch (e) { res.status(500).json({ error: e.message }); }
