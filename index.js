@@ -858,6 +858,8 @@ async function ensureForumPost(page, clientId, opts = {}) {
     document.querySelectorAll('[dusk]').forEach((el) => { const d = el.getAttribute('dusk') || ''; if (/forum|post/i.test(d)) probe.forumDusk.push(d); });
     document.querySelectorAll('input[type=checkbox]').forEach((el) => probe.checkboxes.push({ name: el.getAttribute('name') || '', dusk: el.getAttribute('dusk') || '', id: el.id || '', wrap: (el.closest('[dusk]') && el.closest('[dusk]').getAttribute('dusk')) || '' }));
     document.querySelectorAll('[role=switch], button[aria-checked]').forEach((el) => probe.switches.push({ dusk: el.getAttribute('dusk') || '', aria: el.getAttribute('aria-checked'), wrap: (el.closest('[dusk]') && el.closest('[dusk]').getAttribute('dusk')) || '' }));
+    const w2 = document.querySelector('[dusk^="can_post_in_forum"][dusk$="boolean-field"]');
+    probe.wrapperHtml = w2 ? w2.outerHTML.slice(0, 600) : null;
     return cb ? { found: true, checked: cb.checked, probe } : { found: false, probe };
   });
   if (opts.dry) return { dry: true, current: cur, found: found.found, checked: found.checked, probe: found.probe };
