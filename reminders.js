@@ -211,6 +211,66 @@ async function sendRecovery(c){
   return { id: data.id || null };
 }
 
+// LV dzimuma minējums pēc vārda galotnes (f / m / '' neitrāls)
+function guessGenderLV(name){
+  const first = String(name || '').trim().toLowerCase().split(/\s+/)[0];
+  if (!first) return '';
+  if (/(is|js|rs|ns|ts|ks|ps)$/.test(first)) return 'm';
+  if (/(a|e)$/.test(first)) return 'f';
+  if (/s$/.test(first)) return 'm';
+  return '';
+}
+
+// ---- Vispārīgs zīmola e-pasts ar PADODAMU tekstu (orientation u.c.) ----
+// c: {email, name, gender?}; opts: {subject, paragraphs:[html], button:{label,url}, greeting, sign, campaign, utmContent}
+async function sendBranded(c, opts){
+  if (!RESEND_API_KEY) throw new Error('nav RESEND_API_KEY');
+  const email = String(c.email || '').trim().toLowerCase();
+  if (!email || email.indexOf('@') < 1) throw new Error('nederīgs email');
+  const nm = c.name || '';
+  const g = c.gender || guessGenderLV(nm);
+  const greet = opts.greeting === false ? '' : (g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!');
+  const unsub = unsubUrl(email);
+  const campaign = opts.campaign || 'orientation';
+  const utmC = opts.utmContent || campaign;
+  const subject = (opts.subject || '').replace('{name}', nm);
+  const fillP = (p) => String(p).replace('{name}', nm);
+  const greetHtml = greet ? `<p style="margin:0 0 15px;font-size:16px;color:#0D1B2A;font-weight:bold;">${greet}</p>` : '';
+  const paras = (opts.paragraphs || []).map((p) => `<p style="margin:0 0 16px;font-size:14.5px;line-height:1.62;color:#3a3a3a;">${fillP(p)}</p>`).join('');
+  const btn = (opts.button && opts.button.url)
+    ? `<table cellpadding="0" cellspacing="0" style="margin:22px auto 6px;"><tr><td style="background:#C9781C;border-radius:10px;"><a href="${opts.button.url}" style="display:inline-block;padding:14px 30px;font-size:14.5px;font-weight:bold;color:#ffffff;text-decoration:none;">${opts.button.label || 'Atvērt'} &rarr;</a></td></tr></table>` : '';
+  const sign = opts.sign ? `<p style="margin:20px 0 0;font-size:14px;color:#555;">${opts.sign}</p>` : '';
+  const html = `<table width="100%" cellpadding="0" cellspacing="0" style="background:#F7F0DC;padding:26px 0;font-family:Arial,Helvetica,sans-serif;"><tr><td align="center">
+    <table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
+      <tr><td style="text-align:center;padding:0 0 18px;"><img src="https://go.martinsbidins.com/mb-logo.png" alt="Martins Bidins" width="200" style="display:block;margin:0 auto;border:0;height:auto;outline:none;text-decoration:none;"></td></tr>
+      <tr><td style="background:#ffffff;border-radius:16px;padding:30px 30px 26px;">
+        ${greetHtml}${paras}${btn}${sign}
+      </td></tr>
+      <tr><td style="text-align:center;font-size:11.5px;color:#9a9384;line-height:1.7;padding:18px 10px 2px;">
+        Martins Bidins &middot; Rīga, Latvija<br>
+        <a href="${unsub}" style="color:#9a9384;">Atrakstīties</a>
+      </td></tr>
+    </table></td></tr></table>`;
+  const textBody = (opts.paragraphs || []).map((p) => fillP(p).replace(/<[^>]+>/g, '')).join('\n\n');
+  const text = (greet ? greet + '\n\n' : '') + textBody
+    + ((opts.button && opts.button.url) ? `\n\n${opts.button.label || 'Atvērt'}: ${opts.button.url}` : '')
+    + (opts.sign ? '\n\n' + opts.sign.replace(/<[^>]+>/g, '') : '')
+    + `\n\nAtrakstīties: ${unsub}`;
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: FROM, to: [email], subject, html, text,
+      headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
+      tags: [{ name: 'campaign', value: campaign }, { name: 'content', value: utmC }]
+    })
+  });
+  if (!r.ok) throw new Error(`Resend ${r.status}: ${(await r.text()).slice(0,140)}`);
+  const data = await r.json().catch(() => ({}));
+  recordEvent({ t: 'sent', email, content: utmC, campaign, id: data.id || '', at: Date.now() });
+  return { id: data.id || null };
+}
+
 // ---- Nosaka, kurš e-pasts pienākas kontaktam (vai null) ----
 function dueType(c, t){
   if (c.unsub) return null;
@@ -422,6 +482,25 @@ function wireReminders(app, deps){
     _attribSent.delete(`${campaign}:${email}`); // atļauj testu atkārtot
     sendAttribSignal(email, campaign);
     res.json({ configured, fired: configured, email, campaign, url: ATTRIB_SIGNAL_URL || null });
+  });
+  // Vispārīgs zīmola sūtījums (orientation u.c.), teksts padodams. ?dry=1 = tikai skaita, nesūta.
+  // POST /send-branded {contacts:[{email,name,gender}], subject, paragraphs:[], button:{label,url}, greeting, sign, campaign, dry}
+  app.post('/send-branded', require('express').json({ limit: '2mb' }), async (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const b = req.body || {};
+    const contacts = Array.isArray(b.contacts) ? b.contacts : [];
+    if (!contacts.length) return res.status(400).json({ error: 'vajag contacts[]' });
+    if (!b.subject || !Array.isArray(b.paragraphs) || !b.paragraphs.length) return res.status(400).json({ error: 'vajag subject + paragraphs[]' });
+    const dry = b.dry === true || req.query.dry === '1';
+    const opts = { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, campaign: b.campaign || 'orientation', utmContent: b.utmContent };
+    let sent = 0, errors = 0; const results = [];
+    for (const c of contacts) {
+      const email = String(c.email || '').toLowerCase();
+      if (dry) { results.push({ email, dry: true }); continue; }
+      try { const { id } = await sendBranded(c, opts); sent++; results.push({ email, id }); }
+      catch (e) { errors++; results.push({ email, error: e.message }); }
+    }
+    res.json({ sent, errors, dry, count: contacts.length, results });
   });
   // Pamesto/nesamaksāto grozu atgūšana. POST /calc-recover {contacts:[{email,product,recoverUrl}]}
   app.post('/calc-recover', require('express').json({ limit: '1mb' }), async (req, res) => {
