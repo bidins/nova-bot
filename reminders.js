@@ -395,6 +395,12 @@ function recordConversion(email, landingSite){
   } catch { return false; }
 }
 
+// Vai konkrētajam e-pastam jau nosūtīts kāds campaign (pēc 'sent' notikuma) — dedup starp sūtīšanas ceļiem.
+function hasSentCampaign(email, campaign){
+  const e = (email || '').toLowerCase();
+  return loadEvents().some((x) => x.t === 'sent' && (x.email || '').toLowerCase() === e && x.campaign === campaign);
+}
+
 // ---- Atskaites ----
 function getReports(){
   const events = loadEvents();
@@ -557,4 +563,4 @@ function wireReminders(app, deps){
   if (ENABLED) setInterval(() => runReminders().catch(e => log('cikls', e.message)), 60*60*1000); // ik stundu (viļņi pa MAX_PER_RUN)
 }
 
-module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, sendRecovery, TEMPLATES };
+module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, sendRecovery, sendBranded, hasSentCampaign, TEMPLATES };

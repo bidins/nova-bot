@@ -355,6 +355,43 @@ ${ctaButton(COURSES_URL, 'Uz maniem kursiem →')}
   return { subject: 'Kursi ir pieslēgti - vari sākt!', text, html: emailShell(ctx.productImage, ctx.productTitle || '', body, COURSES_URL) };
 }
 
+// Orientation "pirmā diena" e-pasts — PAGAIDU auto tikai līdz ORIENTATION_UNTIL (šodien+rīt jaunajiem).
+const ORIENTATION_UNTIL = process.env.ORIENTATION_UNTIL || '2026-07-15';
+const ORIENTATION = {
+  subject: 'Sākam! Vasaras projekta pirmā diena 💚',
+  greeting: 'Čau!',
+  paragraphs: [
+    'Šodien ir Vasaras projekta pirmā diena, un es gribu, lai tu jūties [[gaidīta|gaidīts]] un droši.',
+    '<b>Ko darīt tagad:</b>',
+    'Ielogojies un atrodi savu projektu sadaļā "Mani projekti" - ej uz <a href="https://www.martinsbidins.com/lv/login" style="color:#C9781C;font-weight:bold;">martinsbidins.com/lv/login</a>',
+    'Izlasi ievada informāciju - Pamācību, ja vēl to neesi [[izdarījusi|izdarījis]].',
+    'Tad ej uz Svara (Vasaras) projekts - tur ir pirmās dienas info.',
+    'Ej uz "Grupa/forums" un pastāsti mazliet par sevi - kāda pieredze, kādi mērķi - Dienasgrāmatas sadaļā. Šeit precīza saite, lai nav jāmeklē: <a href="https://www.martinsbidins.com/app/forum/category/2/thread/387" style="color:#C9781C;font-weight:bold;">https://www.martinsbidins.com/app/forum/category/2/thread/387</a>',
+    'Nesteidzies un neuztraucies, ja kaut kas vēl nav skaidrs - raksti man vai grupā, atbildēšu.',
+    'Šis ir Tavs projekts, un es esmu tev līdzās visu ceļu. Sākam!',
+  ],
+  sign: 'Mārtiņš',
+  campaign: 'orientation',
+};
+
+/** Nosūta orientation e-pastu vienreiz (tikai līdz ORIENTATION_UNTIL; pēc tam no-op). */
+async function maybeSendOrientation(ctx) {
+  if (DRY_RUN || !ctx || !ctx.email) return;
+  if (new Date().toISOString().slice(0, 10) > ORIENTATION_UNTIL) return; // logs beidzies
+  const map = loadState();
+  const st = map[ctx.email] || {};
+  if (st.orientSent) return; // jau nosūtīts (bota state)
+  if (reminders.hasSentCampaign(ctx.email, 'orientation')) { map[ctx.email] = { ...st, orientSent: true }; saveState(map); return; } // jau saņēmis (piem. 89 backfill)
+  try {
+    await reminders.sendBranded({ email: ctx.email, name: ctx.name, gender: guessGender(ctx.name) }, ORIENTATION);
+    map[ctx.email] = { ...st, orientSent: true };
+    saveState(map);
+    log(`Orientation e-pasts nosūtīts: ${ctx.email}`);
+  } catch (e) {
+    log('Orientation kļūda', ctx.email, e.message);
+  }
+}
+
 /** Nosūta klientam atgādinājumu (ja ieslēgts, ievērojot intervālu un maks. skaitu). */
 async function maybeRemindCustomer(ctx) {
   if (DRY_RUN) return; // testa režīmā nesūta reāliem klientiem
@@ -969,6 +1006,7 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
     const connected = (res.done && res.done.join(', ')) || courses.join(', ');
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
     await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
+    await maybeSendOrientation(ctx); // orientation "pirmā diena" (pagaidu, līdz ORIENTATION_UNTIL)
     if (opts.orderGid) await fulfillShopifyOrder(opts.orderGid); // klients atrasts+pieslēgts -> Shopify fulfilled
     if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
     return res;
@@ -1090,6 +1128,7 @@ async function runJobsCycle() {
           log(`Job izpildīts: ${job.email} [${job.courses}]`);
           await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
           await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
+          await maybeSendOrientation(ctx); // orientation "pirmā diena" (pagaidu, līdz ORIENTATION_UNTIL)
           if (job.orderGid) await fulfillShopifyOrder(job.orderGid); // klients tagad reģistrējies -> Shopify fulfilled
           resolvedIds.add(job.id);
         }
