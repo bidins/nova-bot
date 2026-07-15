@@ -1640,16 +1640,28 @@ app.get('/probe-notif', async (req, res) => {
           return f.filter((y) => /notif|email|marketing|subscrib|pazi/i.test((y.attribute || '') + (y.name || ''))).map((y) => ({ attribute: y.attribute, name: y.name, component: y.component, value: y.value }));
         } catch { return []; }
       }, clientId);
-      // 3-punktu izvēlne
-      await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
-      await wait(2000);
+      // rindas 3-punktu izvēlne (index lapā, kur findClientId jau ir)
+      await page.goto(`${NOVA_BASE}/resources/clients?clients_search=${encodeURIComponent(email)}`, { waitUntil: 'networkidle2' });
+      await wait(2500);
       await page.click(`[dusk="${clientId}-control-selector"] button, [dusk="${clientId}-control-selector"]`).catch(() => {});
-      await wait(1300);
-      const menu = await page.evaluate(() => {
-        const items = [...document.querySelectorAll('a,button,[role=menuitem],[dusk]')].filter((e) => e.offsetParent !== null && (e.textContent || '').trim() && (e.textContent || '').trim().length < 50);
-        return items.map((e) => ({ tag: e.tagName, text: (e.textContent || '').trim().replace(/\s+/g, ' '), href: e.getAttribute('href') || '', dusk: e.getAttribute('dusk') || '' }))
-          .filter((x, i, a) => a.findIndex((y) => y.text === x.text) === i).slice(0, 50);
-      });
+      await wait(1500);
+      const menu = await page.evaluate((id) => {
+        // atvērtās izvēlnes elementi + visi ar dusk, kas satur klienta id
+        const set = new Set();
+        const out = [];
+        const push = (e) => {
+          if (!e || e.offsetParent === null) return;
+          const t = (e.textContent || '').trim().replace(/\s+/g, ' ');
+          const key = e.tagName + '|' + t + '|' + (e.getAttribute('dusk') || '');
+          if (set.has(key) || t.length > 60) return; set.add(key);
+          out.push({ tag: e.tagName, text: t, dusk: e.getAttribute('dusk') || '', href: e.getAttribute('href') || '' });
+        };
+        document.querySelectorAll('[role=menu] a,[role=menu] button,[role=menuitem],[data-headlessui-state] a,[data-headlessui-state] button').forEach(push);
+        document.querySelectorAll(`[dusk^="${id}-"]`).forEach(push);
+        // fallback: jebkas redzams ar /login|imperson/i
+        [...document.querySelectorAll('a,button')].filter((e) => /login as|imperson/i.test(e.textContent || '')).forEach(push);
+        return out.slice(0, 40);
+      }, clientId);
       return { clientId, notifFieldsNova: novaFields, menu };
     });
     res.json(out);
