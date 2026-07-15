@@ -243,7 +243,8 @@ async function sendBranded(c, opts){
   const btn = (opts.button && opts.button.url)
     ? `<table cellpadding="0" cellspacing="0" style="margin:22px auto 6px;"><tr><td style="background:#C9781C;border-radius:10px;"><a href="${opts.button.url}" style="display:inline-block;padding:14px 30px;font-size:14.5px;font-weight:bold;color:#ffffff;text-decoration:none;">${opts.button.label || 'Atvērt'} &rarr;</a></td></tr></table>` : '';
   const sign = opts.sign ? `<p style="margin:20px 0 0;font-size:14px;color:#555;">${gx(opts.sign)}</p>` : '';
-  const html = `<table width="100%" cellpadding="0" cellspacing="0" style="background:#F7F0DC;padding:26px 0;font-family:Arial,Helvetica,sans-serif;"><tr><td align="center">
+  const preheader = opts.preheader ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;opacity:0;font-size:1px;line-height:1px;color:#F7F0DC;">${opts.preheader}</div>` : '';
+  const html = preheader + `<table width="100%" cellpadding="0" cellspacing="0" style="background:#F7F0DC;padding:26px 0;font-family:Arial,Helvetica,sans-serif;"><tr><td align="center">
     <table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
       <tr><td style="text-align:center;padding:0 0 18px;"><img src="https://go.martinsbidins.com/mb-logo.png" alt="Martins Bidins" width="200" style="display:block;margin:0 auto;border:0;height:auto;outline:none;text-decoration:none;"></td></tr>
       <tr><td style="background:#ffffff;border-radius:16px;padding:30px 30px 26px;">
@@ -473,6 +474,15 @@ function wireReminders(app, deps){
     res.send(`<div style="font-family:Arial;max-width:480px;margin:60px auto;text-align:center;color:#173A2C;"><h2>${ok?'Tu esi atrakstīts':'Saite nederīga'}</h2><p>${ok?'Vairs nesūtīsim atgādinājumus. Ja tā bija kļūda - raksti info@martinsbidins.com.':'Lūdzu izmanto saiti no e-pasta.'}</p></div>`);
   });
   app.get('/calc-reports', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; res.json(getReports()); });
+  // Unikālo e-pastu saraksts, kas saņēma konkrētu content (piem. orientation) — auditorijas atkārtošanai. GET /calc-content-emails?content=orientation
+  app.get('/calc-content-emails', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const content = String(req.query.content || '').trim();
+    if (!content) return res.status(400).json({ error: 'vajag content' });
+    const seen = new Set();
+    for (const x of loadEvents()) if (x.t === 'sent' && x.content === content && x.email) seen.add(x.email.toLowerCase());
+    res.json({ content, count: seen.size, emails: [...seen] });
+  });
   // Cik kontaktiem KATRS sekvences e-pasts nosūtīts (no STORE `sent` flagiem — uzticamāks par notikumu logu). GET /calc-seq-counts
   app.get('/calc-seq-counts', (req, res) => {
     if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
@@ -526,7 +536,7 @@ function wireReminders(app, deps){
     if (!contacts.length) return res.status(400).json({ error: 'vajag contacts[]' });
     if (!b.subject || !Array.isArray(b.paragraphs) || !b.paragraphs.length) return res.status(400).json({ error: 'vajag subject + paragraphs[]' });
     const dry = b.dry === true || req.query.dry === '1';
-    const opts = { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, campaign: b.campaign || 'orientation', utmContent: b.utmContent };
+    const opts = { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, preheader: b.preheader, campaign: b.campaign || 'orientation', utmContent: b.utmContent };
     const skipIfSent = b.skipIfSent === true;
     const dedupKey = opts.utmContent || opts.campaign;
     const store = loadStore();
