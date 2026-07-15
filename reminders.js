@@ -232,7 +232,7 @@ async function sendBranded(c, opts){
   // dzimtes tokens: [[sieviete|vīrietis]] -> izvēlas otro tikai ja g==='m', citādi pirmo (neskaidrs -> sieviete)
   const gx = (s) => String(s).replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, (_, ff, mm) => (g === 'm' ? mm : ff));
   const greetRaw = opts.greeting === false ? '' : (typeof opts.greeting === 'string' ? opts.greeting : (g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!'));
-  const greet = gx(greetRaw);
+  const greet = gx(greetRaw.replace('{name}', nm));
   const unsub = unsubUrl(email);
   const campaign = opts.campaign || 'orientation';
   const utmC = opts.utmContent || campaign;
@@ -400,6 +400,17 @@ function hasSentCampaign(email, campaign){
   const e = (email || '').toLowerCase();
   return loadEvents().some((x) => x.t === 'sent' && (x.email || '').toLowerCase() === e && x.campaign === campaign);
 }
+// Vai jau nosūtīts konkrēts SATURS (content, piem. 'winback_2') — dedup atkārtotai/chunked sūtīšanai.
+function hasSentContent(email, content){
+  const e = (email || '').toLowerCase();
+  return loadEvents().some((x) => x.t === 'sent' && (x.email || '').toLowerCase() === e && x.content === content);
+}
+// Cik e-pastiem nosūtīts konkrēts content (verifikācijai pēc broadcast).
+function countSentContent(content){
+  const seen = new Set();
+  for (const x of loadEvents()) if (x.t === 'sent' && x.content === content) seen.add((x.email || '').toLowerCase());
+  return seen.size;
+}
 
 // ---- Atskaites ----
 function getReports(){
@@ -516,14 +527,17 @@ function wireReminders(app, deps){
     if (!b.subject || !Array.isArray(b.paragraphs) || !b.paragraphs.length) return res.status(400).json({ error: 'vajag subject + paragraphs[]' });
     const dry = b.dry === true || req.query.dry === '1';
     const opts = { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, campaign: b.campaign || 'orientation', utmContent: b.utmContent };
-    let sent = 0, errors = 0; const results = [];
+    const skipIfSent = b.skipIfSent === true;
+    const dedupKey = opts.utmContent || opts.campaign;
+    let sent = 0, errors = 0, skipped = 0; const results = [];
     for (const c of contacts) {
       const email = String(c.email || '').toLowerCase();
+      if (skipIfSent && hasSentContent(email, dedupKey)) { skipped++; continue; } // jau nosūtīts -> izlaiž (idempotence)
       if (dry) { results.push({ email, dry: true }); continue; }
-      try { const { id } = await sendBranded(c, opts); sent++; results.push({ email, id }); }
+      try { const { id } = await sendBranded(c, opts); sent++; results.push({ email, id }); await new Promise((x) => setTimeout(x, 200)); }
       catch (e) { errors++; results.push({ email, error: e.message }); }
     }
-    res.json({ sent, errors, dry, count: contacts.length, results });
+    res.json({ sent, errors, skipped, dry, count: contacts.length, sentContentTotal: countSentContent(dedupKey), results: results.slice(0, 5) });
   });
   // Pamesto/nesamaksāto grozu atgūšana. POST /calc-recover {contacts:[{email,product,recoverUrl}]}
   app.post('/calc-recover', require('express').json({ limit: '1mb' }), async (req, res) => {
@@ -577,4 +591,4 @@ function wireReminders(app, deps){
   if (ENABLED) setInterval(() => runReminders().catch(e => log('cikls', e.message)), 60*60*1000); // ik stundu (viļņi pa MAX_PER_RUN)
 }
 
-module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, sendRecovery, sendBranded, hasSentCampaign, TEMPLATES };
+module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, sendRecovery, sendBranded, hasSentCampaign, hasSentContent, countSentContent, TEMPLATES };
