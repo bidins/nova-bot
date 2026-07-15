@@ -462,6 +462,20 @@ function wireReminders(app, deps){
     res.send(`<div style="font-family:Arial;max-width:480px;margin:60px auto;text-align:center;color:#173A2C;"><h2>${ok?'Tu esi atrakstīts':'Saite nederīga'}</h2><p>${ok?'Vairs nesūtīsim atgādinājumus. Ja tā bija kļūda - raksti info@martinsbidins.com.':'Lūdzu izmanto saiti no e-pasta.'}</p></div>`);
   });
   app.get('/calc-reports', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req,res)) return; res.json(getReports()); });
+  // Cik kontaktiem KATRS sekvences e-pasts nosūtīts (no STORE `sent` flagiem — uzticamāks par notikumu logu). GET /calc-seq-counts
+  app.get('/calc-seq-counts', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const s = loadStore();
+    const stages = ['pre_expiry', 'expired_0', 'expired_3', 'expired_7', 'winback'];
+    const out = { total: 0, unsub: 0, byStage: Object.fromEntries(stages.map((k) => [k, 0])) };
+    for (const em of Object.keys(s)) {
+      out.total++;
+      if (s[em].unsub) out.unsub++;
+      const sent = s[em].sent || {};
+      for (const k of stages) if (sent[k]) out.byStage[k]++;
+    }
+    res.json(out);
+  });
   // Viena kontakta notikumi (vai atvēra/klikšķināja) + store stāvoklis. GET /calc-contact?email=X
   app.get('/calc-contact', (req, res) => {
     if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
