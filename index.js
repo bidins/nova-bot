@@ -1662,7 +1662,20 @@ app.get('/probe-notif', async (req, res) => {
         [...document.querySelectorAll('a,button')].filter((e) => /login as|imperson/i.test(e.textContent || '')).forEach(push);
         return out.slice(0, 40);
       }, clientId);
-      return { clientId, notifFieldsNova: novaFields, menu };
+      let impersonate = null;
+      if (stage === '2') {
+        await page.evaluate(() => { const b = [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')); if (b) b.click(); });
+        await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3000);
+        impersonate = await page.evaluate(() => {
+          const links = [...document.querySelectorAll('a')].filter((a) => a.offsetParent !== null)
+            .map((a) => ({ text: (a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40), href: a.getAttribute('href') || '' })).filter((x) => x.text || x.href);
+          const settingsLinks = links.filter((l) => /iestat|settings|profil|konts|account|pazi|manas|mans/i.test(l.text + l.href));
+          const checkboxes = [...document.querySelectorAll('input[type=checkbox]')].map((c) => ({ name: c.getAttribute('name') || '', id: c.id || '', checked: c.checked, near: ((c.closest('label') || c.parentElement || {}).textContent || '').trim().slice(0, 70) }));
+          return { url: location.href, title: document.title, settingsLinks: settingsLinks.slice(0, 25), checkboxes, totalLinks: links.length };
+        });
+      }
+      return { clientId, notifFieldsNova: novaFields, menu, impersonate };
     });
     res.json(out);
   } catch (e) { res.status(500).json({ error: e.message }); }
