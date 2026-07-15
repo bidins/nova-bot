@@ -1664,12 +1664,17 @@ app.get('/probe-notif', async (req, res) => {
       }, clientId);
       let impersonate = null;
       if (stage === '2') {
-        const browser = page.browser();
-        const before = (await browser.pages()).length;
-        await page.evaluate(() => { const b = [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')); if (b) b.click(); });
-        await wait(5000);
-        const pages = await browser.pages();
-        const tab = pages.length > before ? pages[pages.length - 1] : page; // jaunā cilne (vai tā pati, ja nav jaunas)
+        // pārliecinās, ka izvēlne atvērta, tad atrod "Login as client" un klikšķina ĪSTI (ElementHandle)
+        await page.click(`[dusk="${clientId}-control-selector"] button, [dusk="${clientId}-control-selector"]`).catch(() => {});
+        await wait(1300);
+        const handle = await page.evaluateHandle(() => [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')));
+        const el = handle.asElement();
+        const popupPromise = new Promise((resolve) => { const t = setTimeout(() => resolve(null), 9000); page.once('popup', (p) => { clearTimeout(t); resolve(p); }); });
+        if (el) await el.click().catch(() => {});
+        const popup = await popupPromise;
+        await wait(4000);
+        let tab = popup;
+        if (!tab) { const pages = await page.browser().pages(); tab = pages[pages.length - 1]; }
         await tab.bringToFront().catch(() => {});
         await wait(2500);
         impersonate = await tab.evaluate(() => {
