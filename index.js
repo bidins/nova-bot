@@ -1664,16 +1664,22 @@ app.get('/probe-notif', async (req, res) => {
       }, clientId);
       let impersonate = null;
       if (stage === '2') {
+        const browser = page.browser();
+        const before = (await browser.pages()).length;
         await page.evaluate(() => { const b = [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')); if (b) b.click(); });
-        await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
-        await wait(3000);
-        impersonate = await page.evaluate(() => {
+        await wait(5000);
+        const pages = await browser.pages();
+        const tab = pages.length > before ? pages[pages.length - 1] : page; // jaunā cilne (vai tā pati, ja nav jaunas)
+        await tab.bringToFront().catch(() => {});
+        await wait(2500);
+        impersonate = await tab.evaluate(() => {
           const links = [...document.querySelectorAll('a')].filter((a) => a.offsetParent !== null)
             .map((a) => ({ text: (a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40), href: a.getAttribute('href') || '' })).filter((x) => x.text || x.href);
-          const settingsLinks = links.filter((l) => /iestat|settings|profil|konts|account|pazi|manas|mans/i.test(l.text + l.href));
+          const settingsLinks = links.filter((l) => /iestat|settings|profil|konts|account|pazi|manas|mans|izrakst|logout/i.test(l.text + l.href));
           const checkboxes = [...document.querySelectorAll('input[type=checkbox]')].map((c) => ({ name: c.getAttribute('name') || '', id: c.id || '', checked: c.checked, near: ((c.closest('label') || c.parentElement || {}).textContent || '').trim().slice(0, 70) }));
-          return { url: location.href, title: document.title, settingsLinks: settingsLinks.slice(0, 25), checkboxes, totalLinks: links.length };
+          return { url: location.href, title: document.title, newTab: true, settingsLinks: settingsLinks.slice(0, 30), checkboxes, totalLinks: links.length };
         });
+        impersonate.tabsOpened = pages.length - before;
       }
       return { clientId, notifFieldsNova: novaFields, menu, impersonate };
     });
