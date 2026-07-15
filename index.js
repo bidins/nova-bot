@@ -1684,7 +1684,7 @@ app.get('/probe-notif', async (req, res) => {
           const checkboxes = [...document.querySelectorAll('input[type=checkbox]')].map((c) => ({ name: c.getAttribute('name') || '', id: c.id || '', checked: c.checked, near: ((c.closest('label') || c.parentElement || {}).textContent || '').trim().slice(0, 70) }));
           return { url: location.href, title: document.title, newTab: true, settingsLinks: settingsLinks.slice(0, 30), checkboxes, totalLinks: links.length };
         });
-        impersonate.tabsOpened = pages.length - before;
+        impersonate.gotPopup = !!popup;
       }
       return { clientId, notifFieldsNova: novaFields, menu, impersonate };
     });
