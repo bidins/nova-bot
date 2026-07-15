@@ -481,7 +481,9 @@ function wireReminders(app, deps){
     if (!content) return res.status(400).json({ error: 'vajag content' });
     const seen = new Set();
     for (const x of loadEvents()) if (x.t === 'sent' && x.content === content && x.email) seen.add(x.email.toLowerCase());
-    res.json({ content, count: seen.size, emails: [...seen] });
+    const store = loadStore();
+    const contacts = [...seen].map((e) => ({ email: e, name: (store[e] && store[e].name) || '', gender: (store[e] && store[e].gender) || 'f' }));
+    res.json({ content, count: seen.size, emails: [...seen], contacts });
   });
   // Cik kontaktiem KATRS sekvences e-pasts nosūtīts (no STORE `sent` flagiem — uzticamāks par notikumu logu). GET /calc-seq-counts
   app.get('/calc-seq-counts', (req, res) => {
