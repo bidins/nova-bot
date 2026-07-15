@@ -1620,6 +1620,42 @@ app.get('/client-status', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PAGAIDU probe: izpēta paziņojumu atslēgšanas ceļu. GET /probe-notif?email=X&stage=1|2
+app.get('/probe-notif', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  const stage = String(req.query.stage || '1');
+  if (!email) return res.status(400).json({ error: 'vajag email' });
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { error: 'nav klienta' };
+      // vai paziņojumu lauks ir tieši Nova (viegli)?
+      const novaFields = await page.evaluate(async (id) => {
+        try {
+          const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+          const j = await r.json();
+          const f = (j.resource && j.resource.fields) || [];
+          return f.filter((y) => /notif|email|marketing|subscrib|pazi/i.test((y.attribute || '') + (y.name || ''))).map((y) => ({ attribute: y.attribute, name: y.name, component: y.component, value: y.value }));
+        } catch { return []; }
+      }, clientId);
+      // 3-punktu izvēlne
+      await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
+      await wait(2000);
+      await page.click(`[dusk="${clientId}-control-selector"] button, [dusk="${clientId}-control-selector"]`).catch(() => {});
+      await wait(1300);
+      const menu = await page.evaluate(() => {
+        const items = [...document.querySelectorAll('a,button,[role=menuitem],[dusk]')].filter((e) => e.offsetParent !== null && (e.textContent || '').trim() && (e.textContent || '').trim().length < 50);
+        return items.map((e) => ({ tag: e.tagName, text: (e.textContent || '').trim().replace(/\s+/g, ' '), href: e.getAttribute('href') || '', dusk: e.getAttribute('dusk') || '' }))
+          .filter((x, i, a) => a.findIndex((y) => y.text === x.text) === i).slice(0, 50);
+      });
+      return { clientId, notifFieldsNova: novaFields, menu };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
