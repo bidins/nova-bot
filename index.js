@@ -1217,45 +1217,6 @@ async function shopifyGraphql(query, variables = {}) {
 }
 
 // --------------------------------------------------------------------------
-// Atribūcijas pilnā ceļa sinhronizācija — Shopify customerJourneySummary (web
-// pieskārieni, ko REST webhook neredz) -> panelis. Endpoint saglabā ceļu vienmēr,
-// tāpēc šis aizpilda visu 30 dienu pasūtījumu A->Z ceļu (ne tikai kanālu).
-// --------------------------------------------------------------------------
-const ATTR_JOURNEY_URL = 'https://martinsbidins-platform.vercel.app/api/webhooks/attribution/journey?k=8bc7e22c26f8c67e312830ee8e26649336483488';
-async function resyncJourneys() {
-  if (!SHOPIFY_ADMIN_TOKEN) return;
-  const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const q = `query($q: String!, $cursor: String) { orders(first: 60, after: $cursor, query: $q, sortKey: CREATED_AT, reverse: true) {
-    pageInfo { hasNextPage endCursor }
-    edges { node { id customerJourneySummary { momentsCount { count } moments(first: 30) { edges { node { occurredAt ... on CustomerVisit { source referrerUrl landingPage utmParameters { source medium campaign } } } } } } } } } }`;
-  let cursor = null, sent = 0, pages = 0;
-  try {
-    do {
-      const data = await shopifyGraphql(q, { q: `financial_status:paid created_at:>=${since}`, cursor });
-      const conn = data && data.orders;
-      if (!conn) break;
-      for (const e of conn.edges) {
-        const n = e.node;
-        const moments = ((n.customerJourneySummary && n.customerJourneySummary.moments && n.customerJourneySummary.moments.edges) || [])
-          .map((x) => x.node).filter((m) => m && (m.source || m.utmParameters));
-        if (!moments.length) continue;
-        const orderId = String(n.id).split('/').pop();
-        fetch(ATTR_JOURNEY_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shopify_order_id: orderId, moments }),
-        }).catch(() => {});
-        sent++;
-      }
-      cursor = conn.pageInfo && conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
-      pages++;
-      await wait(400);
-    } while (cursor && pages < 5);
-    log(`Ceļa sinhronizācija: ${sent} pasūtījumi nosūtīti (${pages} lapas)`);
-  } catch (e) { log('Ceļa sinhronizācija kļūda:', e.message); }
-}
-
-// --------------------------------------------------------------------------
 // Real-time fulfillment — atzīmē Shopify pasūtījumu kā "fulfilled", kad klients pieslēgts
 // --------------------------------------------------------------------------
 const orderGidOf = (order) => {
@@ -1632,6 +1593,33 @@ app.get('/fix-order', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Klienta statuss: esošais (vecs Nova konts) vai jauns (izveidots jūlijā). GET /client-status?email=X
+app.get('/client-status', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'vajag email' });
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { email, exists: false };
+      const created = await page.evaluate(async (id) => {
+        try {
+          const r = await fetch(`/nova-api/clients/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+          const j = await r.json();
+          const f = (j.resource && j.resource.fields) || [];
+          const x = f.find((y) => y.attribute === 'created_at');
+          return x ? x.value : null;
+        } catch { return null; }
+      }, clientId);
+      const cd = (created || '').slice(0, 10);
+      const existing = !!cd && cd < '2026-07-01'; // konts pirms jūlija = esošais klients
+      return { email, exists: true, clientId, createdAt: created, existing };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
@@ -1679,8 +1667,4 @@ app.listen(PORT, () => {
   setInterval(abandonedTick, 5 * 60 * 1000);
   setTimeout(() => abandonedTick().catch(() => {}), 25000); // viens cikls drīz pēc starta
   log(`Pamesto grozu atgūšana: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva (ik 5 min)' : 'GAIDA SHOPIFY_ADMIN_TOKEN'} | grace ${ABAND_GRACE_MIN}min, max ${ABAND_MAX_H}h`);
-  // atribūcijas pilnā ceļa sinhronizācija (ik 3h + viens cikls pēc starta)
-  setInterval(() => resyncJourneys().catch(() => {}), 3 * 60 * 60 * 1000);
-  setTimeout(() => resyncJourneys().catch(() => {}), 35000);
-  log(`Ceļa sinhronizācija: ${SHOPIFY_ADMIN_TOKEN ? 'aktīva (ik 3h)' : 'GAIDA SHOPIFY_ADMIN_TOKEN'}`);
 });
