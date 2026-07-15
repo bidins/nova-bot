@@ -529,15 +529,17 @@ function wireReminders(app, deps){
     const opts = { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, campaign: b.campaign || 'orientation', utmContent: b.utmContent };
     const skipIfSent = b.skipIfSent === true;
     const dedupKey = opts.utmContent || opts.campaign;
-    let sent = 0, errors = 0, skipped = 0; const results = [];
+    const store = loadStore();
+    let sent = 0, errors = 0, skipped = 0, unsub = 0; const results = [];
     for (const c of contacts) {
       const email = String(c.email || '').toLowerCase();
+      if (store[email] && store[email].unsub) { unsub++; continue; } // atrakstījies -> NEKAD nesūtam
       if (skipIfSent && hasSentContent(email, dedupKey)) { skipped++; continue; } // jau nosūtīts -> izlaiž (idempotence)
       if (dry) { results.push({ email, dry: true }); continue; }
       try { const { id } = await sendBranded(c, opts); sent++; results.push({ email, id }); await new Promise((x) => setTimeout(x, 200)); }
       catch (e) { errors++; results.push({ email, error: e.message }); }
     }
-    res.json({ sent, errors, skipped, dry, count: contacts.length, sentContentTotal: countSentContent(dedupKey), results: results.slice(0, 5) });
+    res.json({ sent, errors, skipped, unsub, dry, count: contacts.length, sentContentTotal: countSentContent(dedupKey), results: results.slice(0, 5) });
   });
   // Pamesto/nesamaksāto grozu atgūšana. POST /calc-recover {contacts:[{email,product,recoverUrl}]}
   app.post('/calc-recover', require('express').json({ limit: '1mb' }), async (req, res) => {
