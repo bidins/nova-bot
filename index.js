@@ -1664,15 +1664,21 @@ app.get('/probe-notif', async (req, res) => {
       }, clientId);
       let impersonate = null;
       if (stage === '2') {
-        // izvēlne jau atvērta no augšas; atrod "Login as client" un klikšķina ĪSTI (ElementHandle)
-        const handle = await page.evaluateHandle(() => [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '') && e.offsetParent !== null));
+        const browser = page.browser();
+        // izvēlne jau atvērta no augšas; atrod "Login as client"
+        const handle = await page.evaluateHandle(() => [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')));
         const el = handle.asElement();
-        const popupPromise = new Promise((resolve) => { const t = setTimeout(() => resolve(null), 9000); page.once('popup', (p) => { clearTimeout(t); resolve(p); }); });
-        if (el) await el.click().catch(() => {});
-        const popup = await popupPromise;
-        await wait(4000);
-        let tab = popup;
-        if (!tab) { const pages = await page.browser().pages(); tab = pages[pages.length - 1]; }
+        const elInfo = el ? await page.evaluate((e) => ({ tag: e.tagName, visible: e.offsetParent !== null, html: (e.outerHTML || '').slice(0, 220), onclick: !!e.onclick }), el) : null;
+        let clickErr = null;
+        if (el) {
+          try { await el.evaluate((e) => e.scrollIntoView({ block: 'center' })); } catch {}
+          try { await el.click({ delay: 60 }); } catch (e) { clickErr = e.message; try { await el.evaluate((e2) => e2.click()); } catch {} }
+        }
+        await wait(6000);
+        const allPages = await browser.pages();
+        const pageUrls = await Promise.all(allPages.map(async (p) => { try { return p.url(); } catch { return '?'; } }));
+        // impersonācijas cilne = tā, kas NAV /nova
+        let tab = allPages.find((p) => { try { return p.url() && !p.url().includes('/nova') && p.url().includes('martinsbidins'); } catch { return false; } }) || allPages[allPages.length - 1] || page;
         await tab.bringToFront().catch(() => {});
         await wait(2500);
         impersonate = await tab.evaluate(() => {
@@ -1680,9 +1686,9 @@ app.get('/probe-notif', async (req, res) => {
             .map((a) => ({ text: (a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40), href: a.getAttribute('href') || '' })).filter((x) => x.text || x.href);
           const settingsLinks = links.filter((l) => /iestat|settings|profil|konts|account|pazi|manas|mans|izrakst|logout/i.test(l.text + l.href));
           const checkboxes = [...document.querySelectorAll('input[type=checkbox]')].map((c) => ({ name: c.getAttribute('name') || '', id: c.id || '', checked: c.checked, near: ((c.closest('label') || c.parentElement || {}).textContent || '').trim().slice(0, 70) }));
-          return { url: location.href, title: document.title, newTab: true, settingsLinks: settingsLinks.slice(0, 30), checkboxes, totalLinks: links.length };
+          return { url: location.href, title: document.title, settingsLinks: settingsLinks.slice(0, 30), checkboxes, totalLinks: links.length };
         });
-        impersonate.gotPopup = !!popup;
+        impersonate.diag = { elFound: !!el, elInfo, clickErr, pageUrls, pagesCount: allPages.length };
       }
       return { clientId, notifFieldsNova: novaFields, menu, impersonate };
     });
