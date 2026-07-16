@@ -1663,6 +1663,29 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '7') {
+        await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+        }, clientId);
+        await page.goto('https://www.martinsbidins.com/profile-settings', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3000);
+        // klikšķina "Paziņojumi" cilni
+        const clicked = await page.evaluate(() => {
+          const el = [...document.querySelectorAll('a,button,li,span,div,h2,h3')].find((e) => /^Pazi[ņn]ojumi$/i.test((e.textContent || '').trim()) && e.offsetParent !== null);
+          if (el) { el.click(); return { found: true, tag: el.tagName, href: el.getAttribute('href') || '' }; }
+          return { found: false };
+        });
+        await wait(3000);
+        const notif = await page.evaluate(() => {
+          const boxes = [...document.querySelectorAll('input[type=checkbox],[role=switch],[role=checkbox],button[aria-checked]')]
+            .filter((c) => !/mimeConset|cookie/i.test(c.id || ''))
+            .map((c) => ({ tag: c.tagName, type: c.getAttribute('type') || c.getAttribute('role') || '', name: c.getAttribute('name') || '', id: c.id || '', checked: c.checked !== undefined ? c.checked : c.getAttribute('aria-checked'), near: ((c.closest('label') || c.closest('.form-group') || c.parentElement || {}).textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) }));
+          const buttons = [...document.querySelectorAll('button,input[type=submit]')].map((b) => ({ text: (b.textContent || b.value || '').trim().slice(0, 30) })).filter((x) => x.text && /saglab|save|atjaun|apstipr/i.test(x.text)).slice(0, 8);
+          return { url: location.href, boxes, buttons, bodyStart: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 400) };
+        });
+        return { clientId, clicked, notif };
+      }
       if (stage === '6') {
         await page.evaluate(async (id) => {
           const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
