@@ -1663,6 +1663,25 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '6') {
+        await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+        }, clientId);
+        await page.goto('https://www.martinsbidins.com/profile-settings', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3500);
+        const settings = await page.evaluate(() => {
+          const boxes = [...document.querySelectorAll('input[type=checkbox],[role=switch],[role=checkbox]')].map((c) => ({
+            tag: c.tagName, type: c.getAttribute('type') || c.getAttribute('role') || '', name: c.getAttribute('name') || '', id: c.id || '',
+            checked: c.checked !== undefined ? c.checked : c.getAttribute('aria-checked'),
+            near: ((c.closest('label') || c.closest('.form-group') || c.parentElement || {}).textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90),
+          }));
+          const labels = [...document.querySelectorAll('label,span,div')].map((l) => (l.textContent || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length < 90 && /pazi|e-past|email|notif|saņem|jaunum/i.test(t)).slice(0, 12);
+          const buttons = [...document.querySelectorAll('button,input[type=submit]')].map((b) => ({ text: (b.textContent || b.value || '').trim().slice(0, 30) })).filter((x) => x.text).slice(0, 12);
+          return { url: location.href, title: document.title, boxes, labels, buttons, bodyStart: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 500) };
+        });
+        return { clientId, settings };
+      }
       if (stage === '5') {
         // 1. startē impersonāciju caur akciju (tajā pašā sesijā)
         const act = await page.evaluate(async (id) => {
