@@ -1663,6 +1663,21 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '11') {
+        await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+        }, clientId);
+        await page.goto('https://www.martinsbidins.com/profile-settings/notifications', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3500);
+        const notif = await page.evaluate(() => {
+          const boxes = [...document.querySelectorAll('input[type=checkbox],input[type=radio],[role=switch],[role=checkbox],button[aria-checked]')].filter((c) => !/cookie|mimeConset/i.test(c.id || ''))
+            .map((c) => ({ tag: c.tagName, type: c.getAttribute('type') || c.getAttribute('role') || '', id: c.id || '', name: c.getAttribute('name') || '', checked: c.checked !== undefined ? c.checked : c.getAttribute('aria-checked'), near: ((c.closest('label') || c.closest('.form-group') || c.parentElement || {}).textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100), html: (c.outerHTML || '').slice(0, 150) }));
+          const buttons = [...document.querySelectorAll('button,input[type=submit]')].map((b) => ({ text: (b.textContent || b.value || '').trim().slice(0, 30), type: b.getAttribute('type') || '', dusk: b.getAttribute('dusk') || '' })).filter((x) => x.text).slice(0, 12);
+          return { url: location.href, title: document.title, boxes, buttons, bodyStart: (document.body.innerText || '').replace(/\s+/g, ' ').slice(150, 650) };
+        });
+        return { clientId, notif };
+      }
       if (stage === '10') {
         await page.evaluate(async (id) => {
           const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
