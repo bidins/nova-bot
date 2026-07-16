@@ -1664,10 +1664,8 @@ app.get('/probe-notif', async (req, res) => {
       }, clientId);
       let impersonate = null;
       if (stage === '2') {
-        // pārliecinās, ka izvēlne atvērta, tad atrod "Login as client" un klikšķina ĪSTI (ElementHandle)
-        await page.click(`[dusk="${clientId}-control-selector"] button, [dusk="${clientId}-control-selector"]`).catch(() => {});
-        await wait(1300);
-        const handle = await page.evaluateHandle(() => [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')));
+        // izvēlne jau atvērta no augšas; atrod "Login as client" un klikšķina ĪSTI (ElementHandle)
+        const handle = await page.evaluateHandle(() => [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '') && e.offsetParent !== null));
         const el = handle.asElement();
         const popupPromise = new Promise((resolve) => { const t = setTimeout(() => resolve(null), 9000); page.once('popup', (p) => { clearTimeout(t); resolve(p); }); });
         if (el) await el.click().catch(() => {});
