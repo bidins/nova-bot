@@ -1663,6 +1663,20 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '10') {
+        await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+        }, clientId);
+        await page.goto('https://www.martinsbidins.com/profile-settings', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3000);
+        const dump = await page.evaluate(() => {
+          const navLinks = [...document.querySelectorAll('.items-navigator a, .items-navigator [role], .items-navigator button, .items-navigator > *')].map((e) => ({ tag: e.tagName, text: (e.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 30), href: e.getAttribute('href') || '', cls: (e.className || '').toString().slice(0, 40) }));
+          const allNotif = [...document.querySelectorAll('*')].filter((e) => e.children.length === 0 && /^Pazi[ņn]ojumi$/i.test((e.textContent || '').trim())).map((e) => { const a = e.closest('a'); return { tag: e.tagName, parentTag: e.parentElement && e.parentElement.tagName, closestAhref: a ? a.getAttribute('href') : null, parentCls: (e.parentElement && e.parentElement.className || '').toString().slice(0, 50) }; });
+          return { navLinks: navLinks.slice(0, 20), allNotif };
+        });
+        return { clientId, dump };
+      }
       if (stage === '9') {
         await page.evaluate(async (id) => {
           const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
