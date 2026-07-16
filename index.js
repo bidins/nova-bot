@@ -364,6 +364,35 @@ ${ctaButton(COURSES_URL, 'Uz maniem kursiem →')}
   return { subject: 'Kursi ir pieslēgti - vari sākt!', text, html: emailShell(ctx.productImage, ctx.productTitle || '', body, COURSES_URL) };
 }
 
+// Upsell/upgrade apstiprinājums — kad esošs klients pieslēdz pilno komplektu (Uztura #192 klāt).
+const UPSELL_CONFIRM = {
+  subject: 'Tavs pilnais komplekts ir atvērts!',
+  greeting: 'Čau!',
+  paragraphs: [
+    'Paldies! Tavs pilnais komplekts ir atvērts - Uztura projekts un 5 treniņu projekti jau ir tavā profilā, un piekļuve pagarināta uz 12 nedēļām.',
+    'Ej un turpinām!',
+  ],
+  button: { label: 'Uz maniem projektiem', url: COURSES_URL },
+  sign: 'Mārtiņš',
+  campaign: 'upsell',
+  utmContent: 'upsell_confirm',
+};
+/** Nosūta upsell apstiprinājumu vienreiz (kad esošs klients dabū pilno komplektu). */
+async function maybeSendUpsellConfirm(ctx) {
+  if (DRY_RUN || !ctx || !ctx.email) return;
+  const map = loadState();
+  const st = map[ctx.email] || {};
+  if (st.upsellConfirmed) return;
+  try {
+    await reminders.sendBranded({ email: ctx.email, name: ctx.name, gender: guessGender(ctx.name) }, UPSELL_CONFIRM);
+    map[ctx.email] = { ...st, upsellConfirmed: true };
+    saveState(map);
+    log(`Upsell apstiprinājums nosūtīts: ${ctx.email}`);
+  } catch (e) {
+    log('Upsell apstiprinājuma kļūda', ctx.email, e.message);
+  }
+}
+
 // Orientation "pirmā diena" e-pasts — PAGAIDU auto tikai līdz ORIENTATION_UNTIL (šodien+rīt jaunajiem).
 const ORIENTATION_UNTIL = process.env.ORIENTATION_UNTIL || '2026-07-15';
 const ORIENTATION = {
@@ -1051,6 +1080,7 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
     await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
     await maybeSendOrientation(ctx); // orientation "pirmā diena" (pagaidu, līdz ORIENTATION_UNTIL)
+    if (res.flattened && res.done && res.done.includes(192)) await maybeSendUpsellConfirm(ctx); // upgrade uz pilno komplektu (Uztura klāt)
     if (opts.orderGid) await fulfillShopifyOrder(opts.orderGid); // klients atrasts+pieslēgts -> Shopify fulfilled
     if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
     return res;
