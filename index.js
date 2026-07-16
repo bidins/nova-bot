@@ -1674,13 +1674,17 @@ app.get('/probe-notif', async (req, res) => {
           try { await el.evaluate((e) => e.scrollIntoView({ block: 'center' })); } catch {}
           try { await el.click({ delay: 60 }); } catch (e) { clickErr = e.message; try { await el.evaluate((e2) => e2.click()); } catch {} }
         }
-        await wait(6000);
-        const allPages = await browser.pages();
+        await wait(3000);
+        let allPages = await browser.pages();
+        // jaunā cilne = about:blank vai frontend (ne sākotnējā Nova clients lapa)
+        let tab = allPages.find((p) => { try { const u = p.url(); return u === 'about:blank' || (u.includes('martinsbidins') && !u.includes('/nova/resources/clients')); } catch { return false; } });
+        if (tab) {
+          await tab.bringToFront().catch(() => {});
+          await tab.waitForFunction(() => location.href !== 'about:blank' && document.readyState !== 'loading', { timeout: 18000 }).catch(() => {});
+          await wait(3500);
+        } else { tab = page; }
+        allPages = await browser.pages();
         const pageUrls = await Promise.all(allPages.map(async (p) => { try { return p.url(); } catch { return '?'; } }));
-        // impersonācijas cilne = tā, kas NAV /nova
-        let tab = allPages.find((p) => { try { return p.url() && !p.url().includes('/nova') && p.url().includes('martinsbidins'); } catch { return false; } }) || allPages[allPages.length - 1] || page;
-        await tab.bringToFront().catch(() => {});
-        await wait(2500);
         impersonate = await tab.evaluate(() => {
           const links = [...document.querySelectorAll('a')].filter((a) => a.offsetParent !== null)
             .map((a) => ({ text: (a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40), href: a.getAttribute('href') || '' })).filter((x) => x.text || x.href);
