@@ -1881,6 +1881,53 @@ app.get('/probe-notif', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Izslēdz klienta "Piekrītu saņemt paziņojumus" (notification_agreement) caur impersonāciju. ?dry=1 = tikai rāda stāvokli.
+// GET /notif-off?email=X
+async function turnOffNotifications(page, clientId, opts = {}) {
+  // 1. startē impersonāciju (tajā pašā sesijā)
+  const act = await page.evaluate(async (id) => {
+    const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+    const r = await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+    return r.status;
+  }, clientId);
+  if (act !== 200) return { error: 'impersonācija neizdevās (status ' + act + ')' };
+  // 2. paziņojumu lapa
+  await page.goto('https://www.martinsbidins.com/profile-settings/notifications', { waitUntil: 'networkidle2' }).catch(() => {});
+  await wait(3000);
+  const before = await page.evaluate(() => { const c = document.querySelector('#notification_agreement'); return c ? c.checked : null; });
+  if (before === null) return { error: 'notification_agreement nav atrasts' };
+  if (before === false) return { changed: false, already: true, before };
+  if (opts.dry) return { dry: true, currentlyChecked: true };
+  // 3. izņem ķeksīti + saglabā ("Turpināt")
+  await page.evaluate(() => { const c = document.querySelector('#notification_agreement'); if (c && c.checked) { c.click(); c.dispatchEvent(new Event('change', { bubbles: true })); } });
+  await wait(700);
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button,input[type=submit]')].find((x) => /turpin[āa]t/i.test((x.textContent || x.value || ''))); if (b) b.click(); });
+  await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+  await wait(2500);
+  // 4. verifikācija — pārlādē un nolasa vēlreiz
+  await page.goto('https://www.martinsbidins.com/profile-settings/notifications', { waitUntil: 'networkidle2' }).catch(() => {});
+  await wait(2500);
+  const after = await page.evaluate(() => { const c = document.querySelector('#notification_agreement'); return c ? c.checked : null; });
+  return { before, after, changed: after === false, confirmed: after === false };
+}
+
+app.get('/notif-off', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  const dry = req.query.dry === '1';
+  if (!email) return res.status(400).json({ error: 'vajag email' });
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { error: 'nav klienta', email };
+      const r = await turnOffNotifications(page, clientId, { dry });
+      return { clientId, email, ...r };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
