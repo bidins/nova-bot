@@ -1663,6 +1663,29 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '9') {
+        await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+        }, clientId);
+        await page.goto('https://www.martinsbidins.com/profile-settings', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3000);
+        const chain = await page.evaluate(() => {
+          const el = [...document.querySelectorAll('*')].find((e) => /^Pazi[ņn]ojumi$/i.test((e.textContent || '').trim()) && e.children.length === 0);
+          if (!el) return { found: false };
+          const out = [];
+          let c = el;
+          for (let i = 0; i < 6 && c; i++) {
+            out.push({ level: i, tag: c.tagName, cls: (c.className || '').toString().slice(0, 80), attrs: [...c.attributes].map((a) => a.name + '=' + a.value.slice(0, 30)).filter((a) => !/^class/.test(a)).join(' ').slice(0, 120) });
+            c = c.parentElement;
+          }
+          // arī: visi sānu izvēlnes teksti ar to href/route
+          const navItems = [...document.querySelectorAll('a,[href],[to],[data-tab],li')].filter((e) => /informācij|paziņojumi|mani dati|paroles|izdzēst/i.test(e.textContent || '') && (e.textContent || '').length < 40)
+            .map((e) => ({ tag: e.tagName, text: (e.textContent || '').trim().slice(0, 30), href: e.getAttribute('href') || e.getAttribute('to') || '' })).slice(0, 12);
+          return { found: true, chain: out, navItems };
+        });
+        return { clientId, chain };
+      }
       if (stage === '8') {
         await page.evaluate(async (id) => {
           const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
