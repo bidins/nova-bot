@@ -1664,27 +1664,19 @@ app.get('/probe-notif', async (req, res) => {
       }, clientId);
       let impersonate = null;
       if (stage === '3') {
-        // tīkla tvērējs: ko login-as-client poga reāli izsauc
+        // tīkla tvērējs BROWSER līmenī (arī jaunā logā)
+        const browser = page.browser();
         const reqs = [];
-        const onReq = (r) => { try { const u = r.url(); if (!/\.(js|css|png|jpe?g|svg|woff2?|ico|gif)(\?|$)/.test(u)) reqs.push({ type: 'req', m: r.method(), u: u.slice(0, 200), post: (r.postData() || '').slice(0, 300) }); } catch {} };
-        const onResp = async (resp) => {
-          try {
-            const u = resp.url();
-            if (/imperson|login-as|action/i.test(u)) {
-              let body = ''; try { body = (await resp.text()).slice(0, 400); } catch {}
-              reqs.push({ type: 'resp', status: resp.status(), u: u.slice(0, 200), body });
-            }
-          } catch {}
-        };
-        page.on('request', onReq);
-        page.on('response', onResp);
+        const skip = /\.(js|css|png|jpe?g|svg|woff2?|ico|gif|map)(\?|$)|nova-notifications|fonts\.|gstatic/;
+        const attach = (pg) => { try { pg.on('request', (r) => { try { const u = r.url(); if (!skip.test(u)) reqs.push({ m: r.method(), u: u.slice(0, 220), post: (r.postData() || '').slice(0, 250) }); } catch {} }); } catch {} };
+        browser.on('targetcreated', async (t) => { try { if (t.type() === 'page') { const pg = await t.page(); if (pg) attach(pg); } } catch {} });
+        for (const pg of await browser.pages()) attach(pg);
         const handle3 = await page.evaluateHandle(() => [...document.querySelectorAll('a,button')].find((e) => /login as client/i.test(e.textContent || '')));
         const el3 = handle3.asElement();
         if (el3) { try { await el3.click({ delay: 60 }); } catch { try { await el3.evaluate((e) => e.click()); } catch {} } }
-        await wait(8000);
-        page.off('request', onReq);
-        page.off('response', onResp);
-        return { clientId, requests: reqs.slice(-25) };
+        await wait(9000);
+        const urls = await Promise.all((await browser.pages()).map(async (p) => { try { return p.url(); } catch { return '?'; } }));
+        return { clientId, requests: reqs.slice(-30), tabUrls: urls };
       }
       if (stage === '2') {
         const browser = page.browser();
