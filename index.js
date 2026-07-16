@@ -1663,6 +1663,23 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '5') {
+        // 1. startē impersonāciju caur akciju (tajā pašā sesijā)
+        const act = await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          const resp = await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+          return { status: resp.status, body: (await resp.text()).slice(0, 200) };
+        }, clientId);
+        // 2. navigē /app — tagad kā klients
+        await page.goto('https://www.martinsbidins.com/app', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3500);
+        const front = await page.evaluate(() => {
+          const links = [...document.querySelectorAll('a')].map((a) => ({ text: (a.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 35), href: a.getAttribute('href') || '' })).filter((x) => x.text || x.href);
+          const settings = links.filter((l) => /iestat|settings|profil|konts|account|pazi|e-past|email/i.test(l.text + l.href));
+          return { url: location.href, title: document.title, bodyStart: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 250), settings: settings.slice(0, 25), sampleLinks: links.slice(0, 35) };
+        });
+        return { clientId, action: act, frontend: front };
+      }
       if (stage === '4') {
         // mēģina impersonācijas endpointus tieši (admin sesijā)
         const tries = await page.evaluate(async (id) => {
