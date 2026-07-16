@@ -485,6 +485,16 @@ function wireReminders(app, deps){
     const contacts = [...seen].map((e) => ({ email: e, name: (store[e] && store[e].name) || '', gender: (store[e] && store[e].gender) || 'f' }));
     res.json({ content, count: seen.size, emails: [...seen], contacts });
   });
+  // Atzīmē e-pastu kā ATRAKSTĪTU store (globāla izslēgšana no VISIEM turpmākiem sūtījumiem, piem. refunds). POST /calc-suppress {email}
+  app.post('/calc-suppress', require('express').json(), (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+    if (!email || email.indexOf('@') < 1) return res.status(400).json({ error: 'vajag derīgu email' });
+    const s = loadStore();
+    s[email] = { ...(s[email] || {}), unsub: true };
+    saveStore(s);
+    res.json({ ok: true, email, unsub: true });
+  });
   // Cik kontaktiem KATRS sekvences e-pasts nosūtīts (no STORE `sent` flagiem — uzticamāks par notikumu logu). GET /calc-seq-counts
   app.get('/calc-seq-counts', (req, res) => {
     if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
