@@ -1663,6 +1663,29 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '4') {
+        // mēģina impersonācijas endpointus tieši (admin sesijā)
+        const tries = await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          const tryEP = async (method, url, body) => {
+            try {
+              const opt = { method, headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', redirect: 'manual' };
+              if (body) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+              const resp = await fetch(url, opt);
+              let t = ''; try { t = (await resp.text()).slice(0, 250); } catch {}
+              return { method, url, status: resp.status, type: resp.type, loc: resp.headers.get('location') || '', body: t };
+            } catch (e) { return { method, url, err: e.message }; }
+          };
+          const out = [];
+          out.push(await tryEP('POST', '/nova-api/impersonate', { resource: 'clients', resourceId: id }));
+          out.push(await tryEP('GET', '/nova/impersonate/' + id));
+          out.push(await tryEP('POST', '/nova-api/clients/' + id + '/impersonate'));
+          out.push(await tryEP('GET', '/nova-vendor/impersonate/' + id));
+          out.push(await tryEP('POST', '/nova-api/clients/action?action=login-as-client', { resources: [id] }));
+          return out;
+        }, clientId);
+        return { clientId, tries };
+      }
       if (stage === '3') {
         // tīkla tvērējs BROWSER līmenī (arī jaunā logā)
         const browser = page.browser();
