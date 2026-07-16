@@ -1663,6 +1663,38 @@ app.get('/probe-notif', async (req, res) => {
         return out.slice(0, 40);
       }, clientId);
       let impersonate = null;
+      if (stage === '8') {
+        await page.evaluate(async (id) => {
+          const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+          await fetch('/nova-api/clients/action?action=login-as-client', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf }, credentials: 'same-origin', body: JSON.stringify({ resources: [id] }) });
+        }, clientId);
+        await page.goto('https://www.martinsbidins.com/profile-settings', { waitUntil: 'networkidle2' }).catch(() => {});
+        await wait(3000);
+        // apraksta "Paziņojumi" elementu + tā klikšķināmo priekšteci
+        const info = await page.evaluate(() => {
+          const el = [...document.querySelectorAll('*')].find((e) => /^Pazi[ņn]ojumi$/i.test((e.textContent || '').trim()) && e.children.length === 0);
+          if (!el) return { found: false };
+          let clickable = el;
+          for (let i = 0; i < 5 && clickable; i++) { if (/^(A|BUTTON|LI)$/.test(clickable.tagName) || clickable.getAttribute('role') || clickable.onclick || getComputedStyle(clickable).cursor === 'pointer') break; clickable = clickable.parentElement; }
+          return { found: true, elHtml: (el.outerHTML || '').slice(0, 150), clickableTag: clickable && clickable.tagName, clickableHtml: clickable && (clickable.outerHTML || '').slice(0, 220) };
+        });
+        // klikšķina to priekšteci (īsts klikšķis)
+        const handle8 = await page.evaluateHandle(() => {
+          const el = [...document.querySelectorAll('*')].find((e) => /^Pazi[ņn]ojumi$/i.test((e.textContent || '').trim()) && e.children.length === 0);
+          if (!el) return null;
+          let c = el; for (let i = 0; i < 5 && c; i++) { if (/^(A|BUTTON|LI)$/.test(c.tagName) || c.getAttribute('role') || getComputedStyle(c).cursor === 'pointer') return c; c = c.parentElement; }
+          return el;
+        });
+        const el8 = handle8.asElement();
+        if (el8) { try { await el8.evaluate((e) => e.scrollIntoView({ block: 'center' })); await el8.click({ delay: 60 }); } catch { try { await el8.evaluate((e) => e.click()); } catch {} } }
+        await wait(3000);
+        const after = await page.evaluate(() => {
+          const boxes = [...document.querySelectorAll('input[type=checkbox],[role=switch],[role=checkbox],button[aria-checked]')].filter((c) => !/cookie|mimeConset/i.test(c.id || ''))
+            .map((c) => ({ tag: c.tagName, type: c.getAttribute('type') || c.getAttribute('role') || '', id: c.id || '', name: c.getAttribute('name') || '', checked: c.checked !== undefined ? c.checked : c.getAttribute('aria-checked'), near: ((c.closest('label') || c.parentElement || {}).textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) }));
+          return { url: location.href, boxes, bodyStart: (document.body.innerText || '').replace(/\s+/g, ' ').slice(180, 620) };
+        });
+        return { clientId, info, after };
+      }
       if (stage === '7') {
         await page.evaluate(async (id) => {
           const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
