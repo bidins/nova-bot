@@ -491,6 +491,11 @@ async function launchBrowser(tries = 3) {
   let lastErr;
   for (let i = 1; i <= tries; i++) {
     try {
+      if (i > 1) {
+        // pirms atkārtota mēģinājuma iztīra zombie chrome procesus (mutex garantē, ka aktīva pārlūka nav)
+        try { require('child_process').execSync('pkill -9 -f chrome 2>/dev/null; pkill -9 -f chromium 2>/dev/null; true', { timeout: 5000 }); } catch {}
+        await wait(1500);
+      }
       return await puppeteer.launch({ headless: true, args });
     } catch (e) {
       lastErr = e;
@@ -498,7 +503,12 @@ async function launchBrowser(tries = 3) {
       await wait(4000 * i); // backoff: 4s, 8s
     }
   }
-  throw lastErr;
+  // Visi mēģinājumi neizdevās -> konteiners iestrēdzis (OOM/zombie procesi). Pašrestarts: Railway pārstartē
+  // tīru konteineru, un gaidošie jobs pieslēdz paši (nav jāgaida manuāls redeploy). Pēdējā glābšana.
+  log(`KRITISKI: Chromium nepalaižas pēc ${tries} mēģinājumiem — RESTARTĒJU procesu, lai Railway pārstartē tīru konteineru`);
+  await notifyAdmin('⚠️ Nova Bot: pārlūks neatvērās, pašrestartēju konteineru (OOM). Gaidošie pasūtījumi pieslēgsies pēc restarta.').catch(() => {});
+  await wait(1500);
+  process.exit(1);
 }
 
 async function runWithBrowser(fn) {
