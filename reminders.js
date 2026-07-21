@@ -30,6 +30,10 @@ const daysBetween = (a, b) => Math.round((new Date(a) - new Date(b)) / 86400000)
 // ---- Store ----
 function loadStore(){ try { return JSON.parse(fs.readFileSync(CALC_EMAILS_FILE, 'utf8')); } catch { return {}; } }
 function saveStore(s){ try { fs.writeFileSync(CALC_EMAILS_FILE, JSON.stringify(s)); } catch (e) { log('store save', e.message); } }
+// Auditorijas/saraksti (piem. "vasaras") — {list: {email: {name, gender}}}
+const AUDIENCES_FILE = process.env.AUDIENCES_FILE || path.join(path.dirname(CALC_EMAILS_FILE), 'audiences.json');
+function loadAudiences(){ try { return JSON.parse(fs.readFileSync(AUDIENCES_FILE, 'utf8')); } catch { return {}; } }
+function saveAudiences(a){ try { fs.writeFileSync(AUDIENCES_FILE, JSON.stringify(a)); } catch (e) { log('audiences save', e.message); } }
 function loadEvents(){ try { return JSON.parse(fs.readFileSync(CALC_EVENTS_FILE, 'utf8')); } catch { return []; } }
 function saveEvents(e){ try { fs.writeFileSync(CALC_EVENTS_FILE, JSON.stringify(e)); } catch (err) { log('events save', err.message); } }
 
@@ -484,6 +488,34 @@ function wireReminders(app, deps){
     const store = loadStore();
     const contacts = [...seen].map((e) => ({ email: e, name: (store[e] && store[e].name) || '', gender: (store[e] && store[e].gender) || 'f' }));
     res.json({ content, count: seen.size, emails: [...seen], contacts });
+  });
+  // ---- Auditorijas/saraksti (piem. "vasaras") — īsts dalībnieku saraksts, neatkarīgs no sūtījumiem ----
+  // Pievieno dalībniekus. POST /calc-audience-add {list, contacts:[{email,name,gender}]}
+  app.post('/calc-audience-add', require('express').json({ limit: '2mb' }), (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const list = String((req.body && req.body.list) || '').trim();
+    const contacts = Array.isArray(req.body && req.body.contacts) ? req.body.contacts : [];
+    if (!list || !contacts.length) return res.status(400).json({ error: 'vajag list + contacts[]' });
+    const a = loadAudiences();
+    a[list] = a[list] || {};
+    let added = 0;
+    for (const c of contacts) {
+      const e = String(c.email || '').trim().toLowerCase();
+      if (!e || e.indexOf('@') < 1) continue;
+      if (!a[list][e]) added++;
+      a[list][e] = { name: c.name || (a[list][e] && a[list][e].name) || '', gender: c.gender || (a[list][e] && a[list][e].gender) || 'f' };
+    }
+    saveAudiences(a);
+    res.json({ list, added, total: Object.keys(a[list]).length });
+  });
+  // Saraksta dalībnieki (izlaižot atrakstījušos). GET /calc-audience?list=vasaras
+  app.get('/calc-audience', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const list = String(req.query.list || '').trim();
+    const a = loadAudiences()[list] || {};
+    const store = loadStore();
+    const contacts = Object.keys(a).filter((e) => !(store[e] && store[e].unsub)).map((e) => ({ email: e, name: a[e].name, gender: a[e].gender }));
+    res.json({ list, count: contacts.length, totalIncludingUnsub: Object.keys(a).length, contacts });
   });
   // Atzīmē e-pastu kā ATRAKSTĪTU store (globāla izslēgšana no VISIEM turpmākiem sūtījumiem, piem. refunds). POST /calc-suppress {email}
   app.post('/calc-suppress', require('express').json(), (req, res) => {
