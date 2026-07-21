@@ -396,15 +396,15 @@ async function maybeSendUpsellConfirm(ctx) {
 // Orientation "pirmā diena" e-pasts — PAGAIDU auto tikai līdz ORIENTATION_UNTIL (šodien+rīt jaunajiem).
 const ORIENTATION_UNTIL = process.env.ORIENTATION_UNTIL || '2026-07-15';
 const ORIENTATION = {
-  subject: 'Sākam! Vasaras projekta pirmā diena 💚',
+  subject: '[[Sveika|Sveiks]] Vasaras projektā - sāc, kad esi [[gatava|gatavs]]',
   greeting: 'Čau!',
   paragraphs: [
-    'Šodien ir Vasaras projekta pirmā diena, un es gribu, lai tu jūties [[gaidīta|gaidīts]] un droši.',
+    'Prieks, ka esi [[pievienojusies|pievienojies]]! Visi materiāli tev pieejami uzreiz, un tu ej savā tempā. Tava pirmā diena ir tad, kad tu izlem sākt.',
     '<b>Ko darīt tagad:</b>',
     'Ielogojies un atrodi savu projektu sadaļā "Mani projekti" - ej uz <a href="https://www.martinsbidins.com/lv/login" style="color:#C9781C;font-weight:bold;">martinsbidins.com/lv/login</a>',
     'Izlasi ievada informāciju - Pamācību, ja vēl to neesi [[izdarījusi|izdarījis]].',
-    'Tad ej uz Svara (Vasaras) projekts - tur ir pirmās dienas info.',
-    'Ej uz "Grupa/forums" un pastāsti mazliet par sevi - kāda pieredze, kādi mērķi - Dienasgrāmatas sadaļā. Šeit precīza saite, lai nav jāmeklē: <a href="https://www.martinsbidins.com/app/forum/category/2/thread/387" style="color:#C9781C;font-weight:bold;">https://www.martinsbidins.com/app/forum/category/2/thread/387</a>',
+    'Tad ej uz Svara (Vasaras) projekts - tur ir viss, ar ko sākt.',
+    'Ej uz "Grupa/forums" un pastāsti mazliet par sevi - kāda pieredze, kādi mērķi - Dienasgrāmatas sadaļā: <a href="https://www.martinsbidins.com/app/forum/category/2" style="color:#C9781C;font-weight:bold;">https://www.martinsbidins.com/app/forum/category/2</a>',
     'Nesteidzies un neuztraucies, ja kaut kas vēl nav skaidrs - raksti man vai grupā, atbildēšu.',
     'Šis ir Tavs projekts, un es esmu tev līdzās visu ceļu. Sākam!',
   ],
@@ -415,9 +415,10 @@ const ORIENTATION = {
 /** Nosūta orientation e-pastu vienreiz (tikai līdz ORIENTATION_UNTIL; pēc tam no-op). */
 async function maybeSendOrientation(ctx) {
   if (DRY_RUN || !ctx || !ctx.email) return;
-  if (new Date().toISOString().slice(0, 10) > ORIENTATION_UNTIL) return; // logs beidzies
   const map = loadState();
   const st = map[ctx.email] || {};
+  // katrs pieslēgtais klients VIENMĒR nonāk Vasaras sarakstā (arī ja welcome jau sūtīts) — lai neviens nepazūd
+  try { reminders.addToAudience('vasaras', { email: ctx.email, name: ctx.name, gender: guessGender(ctx.name) }); } catch (e) { log('audience add', e.message); }
   if (st.orientSent) return; // jau nosūtīts (bota state)
   if (reminders.hasSentCampaign(ctx.email, 'orientation')) { map[ctx.email] = { ...st, orientSent: true }; saveState(map); return; } // jau saņēmis (piem. 89 backfill)
   try {

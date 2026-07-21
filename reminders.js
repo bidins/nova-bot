@@ -34,6 +34,20 @@ function saveStore(s){ try { fs.writeFileSync(CALC_EMAILS_FILE, JSON.stringify(s
 const AUDIENCES_FILE = process.env.AUDIENCES_FILE || path.join(path.dirname(CALC_EMAILS_FILE), 'audiences.json');
 function loadAudiences(){ try { return JSON.parse(fs.readFileSync(AUDIENCES_FILE, 'utf8')); } catch { return {}; } }
 function saveAudiences(a){ try { fs.writeFileSync(AUDIENCES_FILE, JSON.stringify(a)); } catch (e) { log('audiences save', e.message); } }
+/** Pievieno kontaktu(s) sarakstam. Idempotents. Atgriež, cik JAUNI pievienoti. */
+function addToAudience(list, contacts){
+  const a = loadAudiences();
+  a[list] = a[list] || {};
+  let added = 0;
+  for (const c of (Array.isArray(contacts) ? contacts : [contacts])) {
+    const e = String((c && c.email) || '').trim().toLowerCase();
+    if (!e || e.indexOf('@') < 1) continue;
+    if (!a[list][e]) added++;
+    a[list][e] = { name: (c && c.name) || (a[list][e] && a[list][e].name) || '', gender: (c && c.gender) || (a[list][e] && a[list][e].gender) || 'f' };
+  }
+  saveAudiences(a);
+  return added;
+}
 function loadEvents(){ try { return JSON.parse(fs.readFileSync(CALC_EVENTS_FILE, 'utf8')); } catch { return []; } }
 function saveEvents(e){ try { fs.writeFileSync(CALC_EVENTS_FILE, JSON.stringify(e)); } catch (err) { log('events save', err.message); } }
 
@@ -647,4 +661,4 @@ function wireReminders(app, deps){
   if (ENABLED) setInterval(() => runReminders().catch(e => log('cikls', e.message)), 60*60*1000); // ik stundu (viļņi pa MAX_PER_RUN)
 }
 
-module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, sendRecovery, sendBranded, hasSentCampaign, hasSentContent, countSentContent, TEMPLATES };
+module.exports = { wireReminders, runReminders, upsertContact, removeContact, recordConversion, buildEmail, getReports, sendRecovery, sendBranded, hasSentCampaign, hasSentContent, countSentContent, addToAudience, TEMPLATES };
