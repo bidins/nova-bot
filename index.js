@@ -2001,7 +2001,8 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-app.get('/', (_req, res) => res.send('Nova Bot darbojas!')); // health — bez datiem
+const BUILD = 'auto-welcome-2026-07-21';
+app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
   log(`Nova Bot serveris uz porta ${PORT}${DRY_RUN ? ' [DRY_RUN]' : ''} | expiry politika: ${EXPIRY_POLICY}`);
