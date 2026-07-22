@@ -157,10 +157,10 @@ const PRODUCT_COURSE_MAP = {
   // Pircējs JAU ir klients ar [190,196,159] → bots "flatten" (visu uzreiz) un termiņu tikai PAGARINA (EXPIRY_POLICY=extend).
   // Rezultāts abiem: pilnā kursu kopa + 90 dienas. Bez welcomeMsg (ziņu "Par projektu" jau saņēma).
   // €20 — esošajiem klientiem (maksāja €50, 4 ned.)
-  '53363956220170': { label: 'Papildinājums €20 (esošajiem)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
+  '53363956220170': { label: 'Papildinājums €20 (esošajiem)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, upsell: true, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
 
   // €30 — Vasaras pircējiem (maksāja €49)
-  '53363956252938': { label: 'Papildinājums €30 (Vasaras)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
+  '53363956252938': { label: 'Papildinājums €30 (Vasaras)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, upsell: true, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
 
   // Pievieno citus produktus šeit
 };
@@ -1091,7 +1091,7 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
     await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
     await maybeSendOrientation(ctx); // orientation "pirmā diena" (pagaidu, līdz ORIENTATION_UNTIL)
-    if (res.flattened && res.done && res.done.includes(192)) await maybeSendUpsellConfirm(ctx); // upgrade uz pilno komplektu (Uztura klāt)
+    if (opts.upsell) await maybeSendUpsellConfirm(ctx); // TIKAI pēc reāla papildinājuma pirkuma (€20/€30), ne pēc jebkura flatten
     if (opts.orderGid) await fulfillShopifyOrder(opts.orderGid); // klients atrasts+pieslēgts -> Shopify fulfilled
     if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
     return res;
@@ -1175,7 +1175,7 @@ function processOrder(order) {
 
     log(`Pasūtījums ${email}: Shopify ${mapping.label} -> uzreiz ${immediate}${delayedGroups.length ? `, drip ${extraCourses}` : ''} (līdz ${expires})`);
     // uzreiz apstrādā tūlītējo grupu; ja esošam klientam jau ir kāds kurss -> pieslēdz arī aizkavētās uzreiz (flatten)
-    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid });
+    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid, upsell: !!mapping.upsell });
   }
 }
 
