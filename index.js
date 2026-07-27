@@ -1560,6 +1560,26 @@ app.get('/grant-extras', async (req, res) => {
   })();
 });
 
+// Diagnostika: kur bots sūta admin paziņojumus (notifyAdmin). Neatklāj pilnas vērtības.
+// GET /notify-config
+app.get('/notify-config', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const mask = (v) => { if (!v) return null; const s = String(v); return s.length <= 4 ? '****' : '****' + s.slice(-4); };
+  res.json({
+    whatsapp: {
+      configured: !!(process.env.TWILIO_SID && process.env.WHATSAPP_TO),
+      to: mask(process.env.WHATSAPP_TO),
+      hasTwilioSid: !!process.env.TWILIO_SID,
+      hasTwilioToken: !!process.env.TWILIO_TOKEN,
+    },
+    email: {
+      configured: !!process.env.ADMIN_EMAIL,
+      to: mask(process.env.ADMIN_EMAIL),
+    },
+    telegram: false, // Telegram netiek izmantots nekur
+  });
+});
+
 // Manuāli palaist dienas pārbaudi (testam). Aizsargāts.
 app.post('/run-check', (req, res) => {
   if (!requireAdmin(req, res)) return;
@@ -2037,7 +2057,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'grant-extras-2026-07-22';
+const BUILD = 'notify-config-2026-07-22';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
