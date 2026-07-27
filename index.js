@@ -1524,6 +1524,42 @@ app.post('/calc-grant', (req, res) => {
   res.json({ granted: n, total: Object.keys(loadCalcHashes()).length });
 });
 
+// Papildlietas klientam, kuram kursi JAU pieslēgti (piem. maksājums ārpus Shopify):
+// kalkulators + atgādinājuma kontakts + Nova profila ziņa + "kursi pieslēgti"/welcome e-pasti + Vasaras saraksts.
+// NEPIESLĒDZ kursus. GET /grant-extras?email=X&expires=YYYY-MM-DD[&welcomeMsg=vasaras97]
+app.get('/grant-extras', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  const expires = String(req.query.expires || '').trim();
+  const welcomeMsg = String(req.query.welcomeMsg || 'vasaras97').trim();
+  if (!email || !expires) return res.status(400).json({ error: 'vajag email, expires (YYYY-MM-DD)' });
+  res.status(202).json({ accepted: true, email, expires, welcomeMsg });
+  (async () => {
+    try {
+      // 1) kalkulators + atgādinājuma kontakts (dzimte pēc vārda, ja zināms vēlāk no Nova)
+      grantCalcAccess(email, expires);
+      // 2) Nova ziņa profilā (vārdu paņem no Nova, lai dzimte pareiza)
+      let name;
+      await withBrowser(async (page) => {
+        await login(page);
+        const clientId = await findClientId(page, email);
+        if (!clientId) { log(`/grant-extras: ${email} nav atrasts Nova`); return; }
+        name = await getClientFirstName(page, clientId).catch(() => undefined);
+        await maybeSendNovaMessage(page, clientId, email, welcomeMsg);
+      });
+      reminders.upsertContact(email, name, guessGender(name) === 'm' ? 'm' : 'f', expires);
+      // 3) e-pasti + Vasaras saraksts (orientation pievieno sarakstam un sūta welcome)
+      const ctx = { email, name, productTitle: 'Vasaras projekts', productImage: 'vasaras-projekts.jpg' };
+      await sendReadyEmail(ctx);
+      await maybeSendOrientation(ctx);
+      await notifyAdmin(`✅ ${email}: papildlietas nokārtotas (kalk. līdz ${expires}, ziņa, e-pasti, Vasaras saraksts). Kursi netika aiztikti.`);
+    } catch (e) {
+      log('/grant-extras fona kļūda:', e.message);
+      await notifyAdmin(`❌ ${email} /grant-extras kļūda: ${e.message}`).catch(() => {});
+    }
+  })();
+});
+
 // Manuāli palaist dienas pārbaudi (testam). Aizsargāts.
 app.post('/run-check', (req, res) => {
   if (!requireAdmin(req, res)) return;
@@ -2001,7 +2037,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'upsell-gate-2026-07-22';
+const BUILD = 'grant-extras-2026-07-22';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
