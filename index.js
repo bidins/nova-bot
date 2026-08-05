@@ -781,8 +781,8 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
       }
     }
   });
-  // noskaidro beigušos+aktīvos (+diag)
-  const detect = () => page.evaluate(() => {
+  // noskaidro beigušos+aktīvos (+diag). all=true -> VISI kursi (refunds), ne tikai beigušies.
+  const detect = () => page.evaluate((all) => {
     const today = new Date().toISOString().slice(0, 10);
     const t = [...document.querySelectorAll('table')].find((tb) => {
       const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
@@ -800,8 +800,10 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
       const tds = [...tr.querySelectorAll('td')];
       const raw = tds[expIdx] ? tds[expIdx].textContent.trim() : '';
       const datePart = raw.slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}/.test(datePart)) continue; // mūža/tukšs (—) — neaiztiek
-      if (datePart >= today) continue; // vēl aktīvs — neaiztiek
+      if (!all) {
+        if (!/^\d{4}-\d{2}-\d{2}/.test(datePart)) continue; // mūža/tukšs (—) — neaiztiek
+        if (datePart >= today) continue; // vēl aktīvs — neaiztiek
+      }
       const svg = nsIdx >= 0 && tds[nsIdx] ? tds[nsIdx].querySelector('svg') : null;
       const notStopped = svg ? svg.classList.contains('text-green-500') : true;
       if (!notStopped) continue; // sarkans = jau apturēts (idempotence)
@@ -811,14 +813,14 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
     const nextBtn = box ? [...box.querySelectorAll('button,a')].find((b) => /next|nākam/i.test(b.textContent || '') || (b.getAttribute('rel') === 'next')) : null;
     const hasNext = !!(nextBtn && !nextBtn.disabled && nextBtn.getAttribute('aria-disabled') !== 'true');
     return { expired: out, totalRows: rows.length, hasNext };
-  });
+  }, !!opts.all);
   const rescan = async () => { await setPerPageMax(); await wait(2200); return detect(); };
 
   const diag = await rescan();
   const expired = diag.expired;
-  log(`  Pause diag: klients ${clientId} — kursu rindas=${diag.totalRows}, beigušies+aktīvi=${expired.length}, nākamā lapa=${diag.hasNext}`);
+  log(`  Pause diag: klients ${clientId} — kursu rindas=${diag.totalRows}, ${opts.all ? 'VISI apturamie' : 'beigušies+aktīvi'}=${expired.length}, nākamā lapa=${diag.hasNext}`);
   if (opts.diagOnly) return { diag, expired };
-  if (!expired.length) { log('  Pause: nav beigušos aktīvu kursu (visi aktīvi/mūža/jau apturēti)'); return { paused: [], diag }; }
+  if (!expired.length) { log(`  Pause: nav apturamu kursu (${opts.all ? 'visi jau apturēti' : 'visi aktīvi/mūža/jau apturēti'})`); return { paused: [], diag }; }
   if (dry) { log(`  [DRY] Pauzētu ${expired.length}: ${expired.map((e) => e.id).join(',')}`); return { dryRun: true, expired: expired.map((e) => e.id), diag }; }
 
   // pauzē PA VIENAM: Nova bulk-action izpildās tikai vienam ieķeksētajam, tāpēc ciklā ar re-scan
@@ -1621,17 +1623,19 @@ app.get('/ensure-forum', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Aptur beigušos (nepagarinātos) kursus klientam. ?dry=1 = tikai parāda, ko pauzētu (+diag). GET /run-pause?email=X
+// Aptur beigušos (nepagarinātos) kursus klientam. ?dry=1 = tikai parāda, ko pauzētu (+diag).
+// ?all=1 = aptur VISUS kursus neatkarīgi no termiņa (refundam). GET /run-pause?email=X[&all=1][&dry=1]
 app.get('/run-pause', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const email = String(req.query.email || '').trim().toLowerCase();
   const dry = req.query.dry === '1';
+  const all = req.query.all === '1';
   try {
     const out = await withBrowser(async (page) => {
       await login(page);
       const clientId = await findClientId(page, email);
       if (!clientId) return { error: 'nav klienta', email };
-      const r = await pauseExpiredCourses(page, clientId, { dry, diagOnly: dry });
+      const r = await pauseExpiredCourses(page, clientId, { dry, diagOnly: dry, all });
       return { clientId, email, ...r };
     });
     res.json(out);
@@ -2057,7 +2061,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'notify-config-2026-07-22';
+const BUILD = 'pause-all-2026-07-22';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
