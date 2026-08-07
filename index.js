@@ -1476,7 +1476,7 @@ function requireAdmin(req, res) {
 }
 
 // Kalkulatora atjaunošanas atgādinājumi (Resend): /resend/webhook, /calc-unsub, /calc-reports, /calc-run, /calc-test
-reminders.wireReminders(app, { requireAdmin });
+reminders.wireReminders(app, { requireAdmin, notifyAdmin });
 
 app.post('/webhook/shopify', (req, res) => {
   const v = verifyShopifyHmac(req);
@@ -2061,7 +2061,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'event-emails-2026-07-22';
+const BUILD = 'schedule-branded-2026-07-22';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {

@@ -34,6 +34,11 @@ function saveStore(s){ try { fs.writeFileSync(CALC_EMAILS_FILE, JSON.stringify(s
 const AUDIENCES_FILE = process.env.AUDIENCES_FILE || path.join(path.dirname(CALC_EMAILS_FILE), 'audiences.json');
 function loadAudiences(){ try { return JSON.parse(fs.readFileSync(AUDIENCES_FILE, 'utf8')); } catch { return {}; } }
 function saveAudiences(a){ try { fs.writeFileSync(AUDIENCES_FILE, JSON.stringify(a)); } catch (e) { log('audiences save', e.message); } }
+
+// Plānotie sūtījumi (vienreizēji, konkrētā laikā) — bots pats izsūta, arī ja sesija beigusies.
+const SCHEDULED_FILE = process.env.SCHEDULED_FILE || path.join(path.dirname(CALC_EMAILS_FILE), 'scheduled-sends.json');
+function loadScheduled(){ try { return JSON.parse(fs.readFileSync(SCHEDULED_FILE, 'utf8')); } catch { return []; } }
+function saveScheduled(a){ try { fs.writeFileSync(SCHEDULED_FILE, JSON.stringify(a)); } catch (e) { log('scheduled save', e.message); } }
 /** Pievieno kontaktu(s) sarakstam. Idempotents. Atgriež, cik JAUNI pievienoti. */
 function addToAudience(list, contacts){
   const a = loadAudiences();
@@ -717,6 +722,55 @@ function wireReminders(app, deps){
     }
     res.json(out);
   });
+  // PLĀNOTAIS zīmola sūtījums konkrētā laikā. POST /schedule-branded {sendAt:ISO, subject, paragraphs, button?, greeting?, sign?, campaign?, utmContent?, skipIfSent?, contacts:[{email,name,gender}]}
+  app.post('/schedule-branded', require('express').json({ limit: '6mb' }), (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const b = req.body || {};
+    if (!b.sendAt || isNaN(new Date(b.sendAt).getTime())) return res.status(400).json({ error: 'vajag derīgu sendAt (ISO)' });
+    if (!b.subject || !Array.isArray(b.paragraphs) || !b.paragraphs.length) return res.status(400).json({ error: 'vajag subject + paragraphs[]' });
+    if (!Array.isArray(b.contacts) || !b.contacts.length) return res.status(400).json({ error: 'vajag contacts[]' });
+    const list = loadScheduled();
+    const id = 'sch_' + Math.max(0, ...list.map(x => Number(String(x.id).replace('sch_','')) || 0)) + 1;
+    list.push({ id, sendAt: new Date(b.sendAt).toISOString(), createdAt: Date.now(), done: false, sentTotal: 0, lastIdx: 0,
+      opts: { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, preheader: b.preheader, campaign: b.campaign || 'orientation', utmContent: b.utmContent },
+      skipIfSent: b.skipIfSent !== false, contacts: b.contacts });
+    saveScheduled(list);
+    res.json({ scheduled: true, id, sendAt: new Date(b.sendAt).toISOString(), count: b.contacts.length });
+  });
+  app.get('/schedule-branded', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    res.json(loadScheduled().map(x => ({ id: x.id, sendAt: x.sendAt, done: x.done, sentTotal: x.sentTotal, count: (x.contacts||[]).length }))); });
+
+  let schedRunning = false;
+  async function runScheduledSends(){
+    if (schedRunning) return; schedRunning = true;
+    try {
+      const list = loadScheduled();
+      const now = Date.now();
+      for (const job of list) {
+        if (job.done || new Date(job.sendAt).getTime() > now) continue;
+        log(`Plānotais sūtījums ${job.id} sākas (${(job.contacts||[]).length} adresāti)`);
+        if (deps && deps.notifyAdmin) await deps.notifyAdmin(`📣 Plānotais sūtījums ${job.id} sākas: ${(job.contacts||[]).length} adresāti.`).catch(()=>{});
+        const store = loadStore();
+        const dedupKey = job.opts.utmContent || job.opts.campaign;
+        for (let i = 0; i < job.contacts.length; i++) {
+          const c = job.contacts[i];
+          const email = String(c.email || '').toLowerCase();
+          if (email && email.indexOf('@') > 0 && !(store[email] && store[email].unsub) && !(job.skipIfSent && hasSentContent(email, dedupKey))) {
+            try { await sendBranded(c, job.opts); job.sentTotal++; await new Promise(x => setTimeout(x, 200)); }
+            catch (e) { log('plān. sūtījuma kļūda', email, e.message); }
+          }
+          if (i % 120 === 0) { job.lastIdx = i; const l = loadScheduled(); const j = l.find(z => z.id === job.id); if (j) { j.sentTotal = job.sentTotal; j.lastIdx = i; saveScheduled(l); } }
+        }
+        job.done = true; job.doneAt = Date.now();
+        const l2 = loadScheduled(); const j2 = l2.find(z => z.id === job.id); if (j2) { j2.done = true; j2.doneAt = job.doneAt; j2.sentTotal = job.sentTotal; saveScheduled(l2); }
+        log(`Plānotais sūtījums ${job.id} pabeigts: ${job.sentTotal} nosūtīti`);
+        if (deps && deps.notifyAdmin) await deps.notifyAdmin(`✅ Plānotais sūtījums ${job.id} pabeigts: ${job.sentTotal} nosūtīti (${dedupKey}).`).catch(()=>{});
+      }
+    } catch (e) { log('runScheduledSends', e.message); }
+    finally { schedRunning = false; }
+  }
+  setInterval(() => runScheduledSends().catch(e => log('sched cikls', e.message)), 3 * 60 * 1000); // ik 3 min
+
   // dienas cikls
   if (ENABLED) setInterval(() => runReminders().catch(e => log('cikls', e.message)), 60*60*1000); // ik stundu (viļņi pa MAX_PER_RUN)
 }
