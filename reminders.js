@@ -547,12 +547,17 @@ function wireReminders(app, deps){
       else if (e.t === 'unsubscribed') unsubbed.add(em);
     }
     for (const em of Object.keys(store)) if (store[em] && store[em].unsub) unsubbed.add(em);
-    let reachable = 0;
-    for (const em of sent) if (!unsubbed.has(em) && !bounced.has(em) && !complained.has(em)) reachable++;
+    const reachableList = [...sent].filter((e) => !unsubbed.has(e) && !bounced.has(e) && !complained.has(e))
+      .map((e) => ({ email: e, name: (store[e] && store[e].name) || '', gender: (store[e] && store[e].gender) || 'f' }));
+    const unsubList = [...sent].filter((e) => unsubbed.has(e)).sort(); // atrakstijusies UN kadreiz sutiti (=excluded.unsub)
+    const bouncedList = [...sent].filter((e) => bounced.has(e)).sort();
+    const withEmails = req.query.emails === '1';
     res.json({
       everSent: sent.size,
-      reachable,
-      excluded: { unsub: [...sent].filter((e) => unsubbed.has(e)).length, bounced: [...sent].filter((e) => bounced.has(e)).length, complained: [...sent].filter((e) => complained.has(e)).length },
+      reachable: reachableList.length,
+      excluded: { unsub: [...sent].filter((e) => unsubbed.has(e)).length, bounced: bouncedList.length, complained: [...sent].filter((e) => complained.has(e)).length },
+      unsubTotal: unsubbed.size,
+      ...(withEmails ? { reachableContacts: reachableList, unsubEmails: unsubList, bouncedEmails: bouncedList } : {}),
     });
   });
   // AKTĪVIE kontakti: piekļuves termiņš vēl nav beidzies (expiry >= šodien) UN nav atrakstījušies.
