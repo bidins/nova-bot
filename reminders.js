@@ -531,6 +531,30 @@ function wireReminders(app, deps){
     const contacts = Object.keys(a).filter((e) => !(store[e] && store[e].unsub)).map((e) => ({ email: e, name: a[e].name, gender: a[e].gender }));
     res.json({ list, count: contacts.length, totalIncludingUnsub: Object.keys(a).length, contacts });
   });
+  // VISA sasniedzamā bāze jaunumiem (esošie + bijušie): visi, kam JEBKAD sūtīts,
+  // mīnus atrakstījušies un bounced/sūdzības. GET /calc-universe
+  app.get('/calc-universe', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const events = loadEvents();
+    const store = loadStore();
+    const sent = new Set(), bounced = new Set(), complained = new Set(), unsubbed = new Set();
+    for (const e of events) {
+      const em = (e.email || '').trim().toLowerCase();
+      if (!em || em.indexOf('@') < 1) continue;
+      if (e.t === 'sent') sent.add(em);
+      else if (e.t === 'bounced') bounced.add(em);
+      else if (e.t === 'complained') complained.add(em);
+      else if (e.t === 'unsubscribed') unsubbed.add(em);
+    }
+    for (const em of Object.keys(store)) if (store[em] && store[em].unsub) unsubbed.add(em);
+    let reachable = 0;
+    for (const em of sent) if (!unsubbed.has(em) && !bounced.has(em) && !complained.has(em)) reachable++;
+    res.json({
+      everSent: sent.size,
+      reachable,
+      excluded: { unsub: [...sent].filter((e) => unsubbed.has(e)).length, bounced: [...sent].filter((e) => bounced.has(e)).length, complained: [...sent].filter((e) => complained.has(e)).length },
+    });
+  });
   // AKTĪVIE kontakti: piekļuves termiņš vēl nav beidzies (expiry >= šodien) UN nav atrakstījušies.
   // Mūža piekļuve (expiry null) arī skaitās aktīva. GET /calc-active
   app.get('/calc-active', (req, res) => {
