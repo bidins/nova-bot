@@ -531,6 +531,20 @@ function wireReminders(app, deps){
     const contacts = Object.keys(a).filter((e) => !(store[e] && store[e].unsub)).map((e) => ({ email: e, name: a[e].name, gender: a[e].gender }));
     res.json({ list, count: contacts.length, totalIncludingUnsub: Object.keys(a).length, contacts });
   });
+  // Notikuma e-pasti (kurš atlēca/sūdzējās/atvēra utt.). GET /calc-event-emails?type=complained[&content=gimenes_29]
+  app.get('/calc-event-emails', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const type = String(req.query.type || '').trim();
+    const content = String(req.query.content || '').trim();
+    if (!type) return res.status(400).json({ error: 'vajag type (piem. complained/bounced/opened/clicked)' });
+    const out = [];
+    for (const e of loadEvents()) {
+      if (e.t !== type) continue;
+      if (content && e.content !== content) continue;
+      out.push({ email: (e.email || '').toLowerCase(), content: e.content, at: e.at });
+    }
+    res.json({ type, content: content || null, count: out.length, events: out });
+  });
   // VISA sasniedzamā bāze jaunumiem (esošie + bijušie): visi, kam JEBKAD sūtīts,
   // mīnus atrakstījušies un bounced/sūdzības. GET /calc-universe
   app.get('/calc-universe', (req, res) => {
