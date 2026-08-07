@@ -531,6 +531,23 @@ function wireReminders(app, deps){
     const contacts = Object.keys(a).filter((e) => !(store[e] && store[e].unsub)).map((e) => ({ email: e, name: a[e].name, gender: a[e].gender }));
     res.json({ list, count: contacts.length, totalIncludingUnsub: Object.keys(a).length, contacts });
   });
+  // AKTĪVIE kontakti: piekļuves termiņš vēl nav beidzies (expiry >= šodien) UN nav atrakstījušies.
+  // Mūža piekļuve (expiry null) arī skaitās aktīva. GET /calc-active
+  app.get('/calc-active', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    const store = loadStore();
+    const today = new Date().toISOString().slice(0, 10);
+    const contacts = [];
+    let expired = 0, unsub = 0;
+    for (const e of Object.keys(store)) {
+      const c = store[e] || {};
+      if (c.unsub) { unsub++; continue; }
+      const exp = c.expiry ? String(c.expiry).slice(0, 10) : null;
+      if (exp && exp < today) { expired++; continue; } // beidzies
+      contacts.push({ email: e, name: c.name || '', gender: c.gender || 'f', expiry: exp });
+    }
+    res.json({ count: contacts.length, expiredSkipped: expired, unsubSkipped: unsub, totalStore: Object.keys(store).length, contacts });
+  });
   // Atzīmē e-pastu kā ATRAKSTĪTU store (globāla izslēgšana no VISIEM turpmākiem sūtījumiem, piem. refunds). POST /calc-suppress {email}
   app.post('/calc-suppress', require('express').json(), (req, res) => {
     if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
