@@ -1454,7 +1454,7 @@ function checkTick() {
 const app = express();
 // saglabā raw body HMAC pārbaudei
 app.use('/webhook/shopify', express.raw({ type: '*/*' }));
-app.use(express.json());
+app.use(express.json({ limit: '8mb' })); // liels limits plānotajiem sūtījumiem (contacts[])
 
 /** Atgriež {ok, reason} — vai Shopify HMAC ir derīgs. */
 function verifyShopifyHmac(req) {
