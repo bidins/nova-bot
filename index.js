@@ -1688,6 +1688,37 @@ app.get('/nova-courses', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// DIAGNOSTIKA: atver "Add course" modāli un parāda visus laukus/ķeksīšus (lai atrastu "life long").
+// GET /probe-course-modal?email=X
+app.get('/probe-course-modal', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'vajag email' });
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { error: 'nav klienta', email };
+      await openAddCourseModal(page, clientId);
+      await wait(800);
+      const fields = await page.evaluate(() => {
+        const modal = document.querySelector('[dusk="confirm-action-button"]')?.closest('[role="dialog"],.modal,form') || document.body;
+        const els = [...modal.querySelectorAll('[dusk], input, [role="checkbox"], label, select')];
+        return els.slice(0, 80).map((e) => ({
+          tag: e.tagName.toLowerCase(),
+          dusk: e.getAttribute('dusk') || null,
+          type: e.getAttribute('type') || null,
+          role: e.getAttribute('role') || null,
+          state: e.getAttribute('data-state') || e.getAttribute('aria-checked') || null,
+          text: (e.textContent || '').trim().slice(0, 40) || null,
+        })).filter((x) => x.dusk || x.role === 'checkbox' || (x.text && /life|mūž|muz|long|term|expir/i.test(x.text)));
+      });
+      return { clientId, fields };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Nomaina Shopify pasūtījuma e-pastu (ja dots) un pārapstrādā to (pieslēdz kursu jaunajam kontam + fulfill).
 // GET /fix-order?order=1094&email=jaunais@x.lv
 app.get('/fix-order', async (req, res) => {
@@ -2087,7 +2118,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'nova-courses-2026-08-11';
+const BUILD = 'probe-modal-2026-08-11';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
