@@ -437,17 +437,37 @@ function countSentContent(content){
 }
 
 // ---- Atskaites ----
+/** E-pasts no notikuma; Resend dažreiz dod "Vārds <adrese>" — izvelk tīro adresi. */
+function eventEmail(e){
+  const raw = String((e && e.email) || '').trim().toLowerCase();
+  const m = raw.match(/<([^>]+)>/);
+  const em = m ? m[1] : raw;
+  return em.indexOf('@') > 0 ? em : '';
+}
+
 function getReports(){
   const events = loadEvents();
-  const by = {}; // content -> {sent,delivered,opened,clicked,bounced,complained,converted,unsub}
+  const by = {};     // content -> notikumu skaits (vēsturiski)
+  const uniqSets = {}; // content -> {t -> Set(email)}  — UNIKĀLIE cilvēki
   for (const e of events) {
     const k = e.content || '(nezināms)';
     by[k] = by[k] || { sent:0, delivered:0, opened:0, clicked:0, bounced:0, complained:0, converted:0 };
     if (by[k][e.t] !== undefined) by[k][e.t]++;
+    const em = eventEmail(e);
+    if (em) {
+      uniqSets[k] = uniqSets[k] || {};
+      (uniqSets[k][e.t] = uniqSets[k][e.t] || new Set()).add(em);
+    }
+  }
+  // unique: cik CILVĒKU (nevis notikumu) — atvērumi/klikšķi mēdz atkārtoties
+  const unique = {};
+  for (const k of Object.keys(uniqSets)) {
+    unique[k] = {};
+    for (const t of Object.keys(uniqSets[k])) unique[k][t] = uniqSets[k][t].size;
   }
   const store = loadStore();
   let unsub = 0; for (const em of Object.keys(store)) if (store[em].unsub) unsub++;
-  return { by, unsub, contacts: Object.keys(store).length, generatedAt: new Date().toISOString() };
+  return { unique, by, unsub, contacts: Object.keys(store).length, generatedAt: new Date().toISOString() };
 }
 
 // ---- Atrakstīšanās ----
