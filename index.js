@@ -1662,6 +1662,32 @@ app.get('/change-email', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Nolasa visus Nova kursus (id + nosaukums) — lai atrastu jaunus kursus, kas vēl nav courses-map.json.
+// GET /nova-courses[?q=imenes]
+app.get('/nova-courses', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const q = String(req.query.q || '').trim().toLowerCase();
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const list = await page.evaluate(async () => {
+        try {
+          const r = await fetch('/nova-api/courses?perPage=200&orderBy=id&orderByDirection=desc', { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+          const j = await r.json();
+          return (j.resources || []).map((res) => {
+            const f = res.fields || [];
+            const titleF = f.find((x) => /title|name|nosauk/i.test(x.attribute) && typeof x.value === 'string' && x.value.trim());
+            return { id: res.id && res.id.value, title: titleF ? titleF.value : (res.title || '') };
+          });
+        } catch (e) { return { error: e.message }; }
+      });
+      return list;
+    });
+    const filtered = q && Array.isArray(out) ? out.filter((c) => String(c.title || '').toLowerCase().includes(q)) : out;
+    res.json({ count: Array.isArray(filtered) ? filtered.length : 0, courses: filtered });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Nomaina Shopify pasūtījuma e-pastu (ja dots) un pārapstrādā to (pieslēdz kursu jaunajam kontam + fulfill).
 // GET /fix-order?order=1094&email=jaunais@x.lv
 app.get('/fix-order', async (req, res) => {
@@ -2061,7 +2087,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'sched-8mb-2026-07-22';
+const BUILD = 'nova-courses-2026-08-11';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
