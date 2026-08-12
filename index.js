@@ -167,7 +167,7 @@ const PRODUCT_COURSE_MAP = {
   '53489009918218': {
     label: 'Ģimenes uz mūžu €67/€29', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg',
     lifelongCourses: [198], courses: [198],
-    skipEmails: true, audience: 'gimenes', // sava vēstule nāks atsevišķi; pircējus krāj 'gimenes' sarakstā
+    skipEmails: true, audience: 'gimenes', purchaseEmail: 'gimenes29', // sava vēstule; pircējus krāj 'gimenes' sarakstā
   },
 
   // €117 (akcijā €79): Ģimenes (#198) MŪŽĀ + pilnais komplekts (kā Vasaras dārgākajā) uz 84 dienām no 07.09.
@@ -176,7 +176,7 @@ const PRODUCT_COURSE_MAP = {
     label: 'Ģimenes pilnais €117/€79', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg',
     lifelongCourses: [198], stackFrom: '2026-09-07', stackDays: 84,
     courses: [198, 190, 196, 159, 192, 172, 154, 164, 160, 165],
-    skipEmails: true, audience: 'gimenes',
+    skipEmails: true, audience: 'gimenes', purchaseEmail: 'gimenes79',
   },
 
   // Pievieno citus produktus šeit
@@ -392,6 +392,55 @@ ${ctaButton(COURSES_URL, 'Uz maniem kursiem →')}
 <p style="margin:18px 0 0 0;font-size:15px;">Mārtiņš Bidiņš</p>`;
   const text = `${greet}\n\nKursi ir pieslēgti.\n\nPaldies.\n\nLūdzu, izlasi pamācību un vēstuli no manis.\n\n${COURSES_URL}\n\nMārtiņš Bidiņš`;
   return { subject: 'Kursi ir pieslēgti - vari sākt!', text, html: emailShell(ctx.productImage, ctx.productTitle || '', body, COURSES_URL) };
+}
+
+// Pirkuma apstiprinājumi pa produktiem (Ģimenes akcija 12.08). Bez emoji, cieņas Tu/Tev ar lielo.
+const PURCHASE_EMAILS = {
+  // €29 — tikai Ģimenes projekts (mūža piekļuve), sākas 07.09
+  gimenes29: {
+    campaign: 'gimenes', utmContent: 'gimenes_pirkums_29',
+    subject: 'Paldies! Un kas notiek tālāk',
+    greeting: 'Čau!',
+    paragraphs: [
+      'Paldies par pirkumu - Ģimenes projekts ir Tavs.',
+      'Kas notiek tālāk: projekts sāksies 7. septembrī. Tajā dienā saņemsi no manis atsevišķu e-pastu ar piekļuvi un visu, kas jāzina, lai sāktu. Līdz tam Tev nekas nav jādara - vari mierīgi baudīt atlikušo vasaru.',
+      'Un atgādinu - Tava piekļuve ir uz mūžu. Nekur nav jāsteidzas un nekas nepazudīs: saturs pa vecuma posmiem noderēs arī tad, kad bērni paaugsies.',
+      'Uz tikšanos septembrī!',
+      'Mārtiņš',
+      'P.S. Ja pa šo laiku rodas kāds jautājums - atbildi uz šo e-pastu.',
+    ],
+    sign: false,
+  },
+  // €79 — pilnais komplekts: Ģimenes mūžā + pārējie kursi jau aktīvi līdz 30.11
+  gimenes79: {
+    campaign: 'gimenes', utmContent: 'gimenes_pirkums_79',
+    subject: 'Paldies! Un Tu vari sākt jau šodien',
+    greeting: 'Čau!',
+    paragraphs: [
+      'Paldies par pirkumu - Tu paņēmi pilno komplektu.',
+      'Ģimenes projekts sāksies 7. septembrī - tajā dienā saņemsi atsevišķu e-pastu ar piekļuvi un visu, kas jāzina. Ģimenes daļa Tev ir uz mūžu, tā nekur nepazudīs.',
+      'Bet Uztura projekts, Svara projekts un pārējie materiāli ir aktīvi <b>jau tagad</b> - un būs pieejami līdz 30. novembrim, tas ir, 12 nedēļas no Ģimenes projekta starta. Tu vari sākt lasīt jau tagad vai vēlāk, Tava izvēle.',
+      'Uz tikšanos!',
+      'Mārtiņš',
+      'P.S. Ja kaut kas neatveras vai neizdodas ielogoties - atbildi uz šo e-pastu, sakārtošu.',
+    ],
+    button: { label: 'SĀKT UZTURA PROJEKTU', url: COURSES_URL },
+    sign: false,
+  },
+};
+
+/** Nosūta produkta pirkuma apstiprinājumu (vienreiz uz e-pastu+saturu). */
+async function maybeSendPurchaseEmail(ctx, key) {
+  if (DRY_RUN || !ctx || !ctx.email || !key) return;
+  const tpl = PURCHASE_EMAILS[key];
+  if (!tpl) { log(`Nav pirkuma vēstules šablona: ${key}`); return; }
+  try {
+    if (reminders.hasSentContent(ctx.email, tpl.utmContent)) { log(`Pirkuma vēstule jau sūtīta (${key}): ${ctx.email}`); return; }
+    await reminders.sendBranded({ email: ctx.email, name: ctx.name, gender: guessGender(ctx.name) }, tpl);
+    log(`Pirkuma vēstule nosūtīta (${key}): ${ctx.email}`);
+  } catch (e) {
+    log('Pirkuma vēstules kļūda', ctx.email, e.message);
+  }
 }
 
 // Upsell/upgrade apstiprinājums — kad esošs klients pieslēdz pilno komplektu (Uztura #192 klāt).
@@ -1165,7 +1214,7 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
   const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
   const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg, orderGid: opts.orderGid,
     lifelongCourses: opts.lifelongCourses, stackFrom: opts.stackFrom, stackDays: opts.stackDays,
-    skipEmails: opts.skipEmails, audience: opts.audience };
+    skipEmails: opts.skipEmails, audience: opts.audience, purchaseEmail: opts.purchaseEmail };
   // ieliek aizkavētās drip grupas rindā (jauniem klientiem)
   const queueDelayed = () => (opts.delayedGroups || []).forEach((g) =>
     addJob({ email, courses: g.courses, expires, source: `Shopify ${opts.label} +${g.delayDays}d`, runAt: Date.now() + g.delayDays * 86400000, ...jobMeta }));
@@ -1182,6 +1231,7 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
     if (!opts.skipEmails) await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz; produkti ar savu vēstuli to izlaiž)
     await maybeSendOrientation(ctx, { audience: opts.audience, skipEmails: opts.skipEmails }); // sarakstā vienmēr; welcome tikai ja produktam nav savas vēstules
+    if (opts.purchaseEmail) await maybeSendPurchaseEmail(ctx, opts.purchaseEmail); // produkta pirkuma apstiprinājums
     if (opts.upsell) await maybeSendUpsellConfirm(ctx); // TIKAI pēc reāla papildinājuma pirkuma (€20/€30), ne pēc jebkura flatten
     if (opts.orderGid) await fulfillShopifyOrder(opts.orderGid); // klients atrasts+pieslēgts -> Shopify fulfilled
     if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
@@ -1281,7 +1331,7 @@ function processOrder(order) {
     // uzreiz apstrādā tūlītējo grupu; ja esošam klientam jau ir kāds kurss -> pieslēdz arī aizkavētās uzreiz (flatten)
     processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid, upsell: !!mapping.upsell,
       lifelongCourses: mapping.lifelongCourses, stackFrom: mapping.stackFrom, stackDays: mapping.stackDays,
-      skipEmails: !!mapping.skipEmails, audience: mapping.audience });
+      skipEmails: !!mapping.skipEmails, audience: mapping.audience, purchaseEmail: mapping.purchaseEmail });
   }
 }
 
@@ -1321,6 +1371,7 @@ async function runJobsCycle() {
           await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
           if (!job.skipEmails) await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
           await maybeSendOrientation(ctx, { audience: job.audience, skipEmails: job.skipEmails });
+          if (job.purchaseEmail) await maybeSendPurchaseEmail(ctx, job.purchaseEmail);
           if (job.orderGid) await fulfillShopifyOrder(job.orderGid); // klients tagad reģistrējies -> Shopify fulfilled
           resolvedIds.add(job.id);
         }
@@ -2240,7 +2291,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'gimenes-noemails-2026-08-12';
+const BUILD = 'gimenes-purchase-2026-08-12';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
