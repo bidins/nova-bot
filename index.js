@@ -283,9 +283,10 @@ function setAdminMute(muted, until) {
   catch (e) { log('admin-mute save', e.message); return false; }
 }
 
-async function notifyAdmin(text) {
+async function notifyAdmin(text, opts = {}) {
   const isProblem = /^[❌⚠️]/.test(String(text).trim());
-  if (isAdminMuted() && !isProblem) { log(`[klusums] admin paziņojums apslāpēts: ${String(text).slice(0, 60)}`); return; }
+  // force: svarīgas ziņas (piem. plānotā sūtījuma sākums/beigas) iet cauri arī klusuma režīmā
+  if (isAdminMuted() && !isProblem && !opts.force) { log(`[klusums] admin paziņojums apslāpēts: ${String(text).slice(0, 60)}`); return; }
   try { await notifyWhatsApp(text); } catch (e) { log('WhatsApp kļūda:', e.message); }
   try { if (process.env.ADMIN_EMAIL) await notifyEmail(process.env.ADMIN_EMAIL, 'Nova Bot', text); }
   catch (e) { log('E-pasta kļūda:', e.message); }
@@ -2291,7 +2292,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'dyn-filter-2026-08-12';
+const BUILD = 'force-notify-2026-08-12';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {

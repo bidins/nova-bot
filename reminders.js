@@ -793,7 +793,7 @@ function wireReminders(app, deps){
           log(`Plānotais ${job.id}: dinamiskais filtrs ${before} -> ${job.contacts.length} (atvēra ${opened.size}, izslēgti pircēji ${excl.size})`);
         }
         log(`Plānotais sūtījums ${job.id} sākas (${(job.contacts||[]).length} adresāti)`);
-        if (deps && deps.notifyAdmin) await deps.notifyAdmin(`📣 Plānotais sūtījums ${job.id} sākas: ${(job.contacts||[]).length} adresāti.`).catch(()=>{});
+        if (deps && deps.notifyAdmin) await deps.notifyAdmin(`📣 Plānotais sūtījums ${job.id} SĀKAS: ${(job.contacts||[]).length} adresāti (${job.opts && job.opts.utmContent || ''}).`, { force: true }).catch(()=>{});
         const store = loadStore();
         const dedupKey = job.opts.utmContent || job.opts.campaign;
         for (let i = 0; i < job.contacts.length; i++) {
@@ -808,7 +808,7 @@ function wireReminders(app, deps){
         job.done = true; job.doneAt = Date.now();
         const l2 = loadScheduled(); const j2 = l2.find(z => z.id === job.id); if (j2) { j2.done = true; j2.doneAt = job.doneAt; j2.sentTotal = job.sentTotal; saveScheduled(l2); }
         log(`Plānotais sūtījums ${job.id} pabeigts: ${job.sentTotal} nosūtīti`);
-        if (deps && deps.notifyAdmin) await deps.notifyAdmin(`✅ Plānotais sūtījums ${job.id} pabeigts: ${job.sentTotal} nosūtīti (${dedupKey}).`).catch(()=>{});
+        if (deps && deps.notifyAdmin) await deps.notifyAdmin(`✅ Plānotais sūtījums ${job.id} PABEIGTS: ${job.sentTotal} nosūtīti (${dedupKey}).`, { force: true }).catch(()=>{});
       }
     } catch (e) { log('runScheduledSends', e.message); }
     finally { schedRunning = false; }
