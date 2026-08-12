@@ -753,9 +753,14 @@ function wireReminders(app, deps){
     const id = 'sch_' + Math.max(0, ...list.map(x => Number(String(x.id).replace('sch_','')) || 0)) + 1;
     list.push({ id, sendAt: new Date(b.sendAt).toISOString(), createdAt: Date.now(), done: false, sentTotal: 0, lastIdx: 0,
       opts: { subject: b.subject, paragraphs: b.paragraphs, button: b.button, greeting: b.greeting, sign: b.sign, preheader: b.preheader, campaign: b.campaign || 'orientation', utmContent: b.utmContent },
-      skipIfSent: b.skipIfSent !== false, contacts: b.contacts });
+      skipIfSent: b.skipIfSent !== false, contacts: b.contacts,
+      // DINAMISKAIS filtrs — piemēro SŪTĪŠANAS brīdī, ne plānošanas (lai vakara atvērēji/pircēji tiek ņemti vērā)
+      filterOpenedAny: Array.isArray(b.filterOpenedAny) ? b.filterOpenedAny : null,
+      filterExcludeAudience: b.filterExcludeAudience || null });
     saveScheduled(list);
-    res.json({ scheduled: true, id, sendAt: new Date(b.sendAt).toISOString(), count: b.contacts.length });
+    res.json({ scheduled: true, id, sendAt: new Date(b.sendAt).toISOString(), candidates: b.contacts.length,
+      filters: { openedAny: b.filterOpenedAny || null, excludeAudience: b.filterExcludeAudience || null },
+      note: b.filterOpenedAny ? 'auditorija tiks izrēķināta sūtīšanas brīdī' : undefined });
   });
   app.get('/schedule-branded', (req, res) => { if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
     res.json(loadScheduled().map(x => ({ id: x.id, sendAt: x.sendAt, done: x.done, sentTotal: x.sentTotal, count: (x.contacts||[]).length }))); });
@@ -768,6 +773,25 @@ function wireReminders(app, deps){
       const now = Date.now();
       for (const job of list) {
         if (job.done || new Date(job.sendAt).getTime() > now) continue;
+        // dinamiskais filtrs: atlasa TIKAI tos, kas atvēra kādu no norādītajām vēstulēm, un izmet jau nopirkušos
+        if (job.filterOpenedAny && job.filterOpenedAny.length) {
+          const norm = (e) => { let x=String(e||'').trim().toLowerCase(); const m=x.match(/<([^>]+)>/); if(m) x=m[1];
+            if (x.endsWith('@gmail.com')) { const i=x.indexOf('@'); x=x.slice(0,i).replace(/\./g,'')+x.slice(i); } return x; };
+          const opened = new Set();
+          for (const ev of loadEvents()) {
+            if (ev.t !== 'opened') continue;
+            if (!job.filterOpenedAny.includes(ev.content)) continue;
+            const n = norm(ev.email); if (n.indexOf('@') > 0) opened.add(n);
+          }
+          const excl = new Set();
+          if (job.filterExcludeAudience) {
+            const a = loadAudiences()[job.filterExcludeAudience] || {};
+            for (const e of Object.keys(a)) excl.add(norm(e));
+          }
+          const before = (job.contacts||[]).length;
+          job.contacts = (job.contacts||[]).filter((c) => { const n = norm(c.email); return opened.has(n) && !excl.has(n); });
+          log(`Plānotais ${job.id}: dinamiskais filtrs ${before} -> ${job.contacts.length} (atvēra ${opened.size}, izslēgti pircēji ${excl.size})`);
+        }
         log(`Plānotais sūtījums ${job.id} sākas (${(job.contacts||[]).length} adresāti)`);
         if (deps && deps.notifyAdmin) await deps.notifyAdmin(`📣 Plānotais sūtījums ${job.id} sākas: ${(job.contacts||[]).length} adresāti.`).catch(()=>{});
         const store = loadStore();
