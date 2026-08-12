@@ -162,6 +162,21 @@ const PRODUCT_COURSE_MAP = {
   // €30 — Vasaras pircējiem (maksāja €49)
   '53363956252938': { label: 'Papildinājums €30 (Vasaras)', title: 'Vasaras projekts', image: 'vasaras-projekts.jpg', expiresDays: 90, upsell: true, courses: [190, 196, 159, 192, 172, 154, 164, 160, 165] },
 
+  // === ĢIMENES PROJEKTS (izvēlīgais ēdājs) — akcija 12.08, publiski no 07.09 ===
+  // €67 (akcijā €29): TIKAI Ģimenes projekts (#198), MŪŽA piekļuve (bez datuma).
+  '53489009918218': {
+    label: 'Ģimenes uz mūžu €67/€29', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg',
+    lifelongCourses: [198], courses: [198],
+  },
+
+  // €117 (akcijā €79): Ģimenes (#198) MŪŽĀ + pilnais komplekts (kā Vasaras dārgākajā) uz 84 dienām no 07.09.
+  // Ja klientam kāds no komplekta kursiem JAU aktīvs → tā beigu datums + 84 dienas (stack, nevis pārraksta).
+  '53504436896010': {
+    label: 'Ģimenes pilnais €117/€79', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg',
+    lifelongCourses: [198], stackFrom: '2026-09-07', stackDays: 84,
+    courses: [198, 190, 196, 159, 192, 172, 154, 164, 160, 165],
+  },
+
   // Pievieno citus produktus šeit
 };
 
@@ -637,7 +652,7 @@ async function clientHasAnyCourse(page, courseIds) {
 
 /** Izvēlas kursu modālī pēc ID (caur nosaukumu) un iestata expires.
  *  Atgriež {alreadyHas:true}, ja kurss jau pievienots klientam (nav dropdown, bet ir tabulā). */
-async function fillCourse(page, courseId, expiresDate) {
+async function fillCourse(page, courseId, expiresDate, courseOpts = {}) {
   const title = COURSE_TITLES[courseId];
   if (!title) throw new Error(`Nav nosaukuma kursam #${courseId} (papildini courses-map.json)`);
 
@@ -651,6 +666,25 @@ async function fillCourse(page, courseId, expiresDate) {
   }
   log(`  Izvēlēts: ${picked}`);
   await wait(800);
+
+  // MŪŽA piekļuve: ieķeksē "Has life long access" un datumu NEaizpilda vispār
+  if (courseOpts.lifelong) {
+    const ticked = await page.evaluate(() => {
+      const el = document.querySelector('[dusk="has_lifelong_access-default-boolean-field"]');
+      if (!el) return { found: false };
+      if (el.getAttribute('data-state') !== 'checked' && el.getAttribute('aria-checked') !== 'true') el.click();
+      return { found: true, state: el.getAttribute('data-state') };
+    });
+    if (!ticked.found) throw new Error(`Nav "Has life long access" ķeksīša (kurss #${courseId})`);
+    await wait(600);
+    const st = await page.evaluate(() => ({
+      course: document.querySelector('[dusk="course_id-search-input-selected"]')?.textContent.trim(),
+      lifelong: document.querySelector('[dusk="has_lifelong_access-default-boolean-field"]')?.getAttribute('data-state'),
+    }));
+    if (st.lifelong !== 'checked') throw new Error(`Life-long ķeksītis neieslēdzās (kurss #${courseId}): ${JSON.stringify(st)}`);
+    log(`  Aizpildīts: ${st.course} | MŪŽA piekļuve (bez datuma)`);
+    return st;
+  }
 
   // expires (datetime-local prasa YYYY-MM-DDTHH:MM)
   const dtValue = `${expiresDate}T00:00`;
@@ -676,8 +710,8 @@ async function fillCourse(page, courseId, expiresDate) {
 }
 
 /** Maina jau pieslēgta kursa expiry: Courses tabula -> ieķeksē rindu -> action "Change Expire". */
-async function changeExpiry(page, clientId, courseId, newExpires) {
-  if (EXPIRY_POLICY === 'skip') {
+async function changeExpiry(page, clientId, courseId, newExpires, courseOpts = {}) {
+  if (EXPIRY_POLICY === 'skip' && !courseOpts.stackDays && !courseOpts.lifelong) {
     log(`  Kurss #${courseId} jau ir — politika 'skip', expiry nemainu`);
     return { kept: true };
   }
@@ -717,10 +751,42 @@ async function changeExpiry(page, clientId, courseId, newExpires) {
     const el = [...document.querySelectorAll('[dusk="expires_at"]')].find((e) => e.offsetParent !== null);
     return el ? el.value : '';
   });
-  const newDt = `${newExpires}T00:00`;
+  let newDt = `${newExpires}T00:00`;
 
-  // extend-only: ja esošais ir vēlāks vai vienāds — neko nemaina
-  if (EXPIRY_POLICY === 'extend' && current && new Date(current) >= new Date(newDt)) {
+  // MŪŽA piekļuve esošam kursam: ieķeksē life-long (ja modālī ir) un datumu neaiztiek
+  if (courseOpts.lifelong) {
+    const r = await page.evaluate(() => {
+      const el = document.querySelector('[dusk="has_lifelong_access-default-boolean-field"]');
+      if (!el) return { found: false };
+      if (el.getAttribute('data-state') !== 'checked' && el.getAttribute('aria-checked') !== 'true') el.click();
+      return { found: true, state: el.getAttribute('data-state') };
+    });
+    if (r.found) {
+      await wait(500);
+      await page.click('[dusk="confirm-action-button"]');
+      await page.waitForFunction(() => !document.querySelector('[dusk="modal-backdrop"]'), { timeout: 15000 }).catch(() => {});
+      await wait(1200);
+      log(`  Kurss #${courseId}: uzstādīta MŪŽA piekļuve (jau bija pieslēgts)`);
+      return { success: true, lifelong: true };
+    }
+    log(`  Kurss #${courseId}: Change Expire modālī nav life-long ķeksīša — atstāju kā ir`);
+    await page.click('[dusk="cancel-action-button"]').catch(() => {});
+    await wait(500);
+    return { kept: true, current };
+  }
+
+  // STACK: aktīvam kursam pieskaita dienas ESOŠAJAM beigu datumam (nevis pārraksta)
+  if (courseOpts.stackDays) {
+    const today = new Date().toISOString().slice(0, 10);
+    const cur10 = (current || '').slice(0, 10);
+    const base = (cur10 && cur10 >= today) ? cur10 : String(courseOpts.stackFrom || newExpires).slice(0, 10);
+    const target = (cur10 && cur10 >= today) ? addDays(cur10, courseOpts.stackDays) : newExpires;
+    newDt = `${target}T00:00`;
+    log(`  Kurss #${courseId}: STACK — esošais ${cur10 || '(nav)'} → jaunais ${target} (bāze ${base} + ${courseOpts.stackDays}d)`);
+  }
+
+  // extend-only: ja esošais ir vēlāks vai vienāds — neko nemaina (stack režīmā izlaiž, jo mērķis jau ir vēlāks)
+  if (!courseOpts.stackDays && EXPIRY_POLICY === 'extend' && current && new Date(current) >= new Date(newDt)) {
     log(`  Kurss #${courseId}: esošais expiry ${current} >= jaunais ${newDt} — atstāju (extend-only)`);
     await page.click('[dusk="cancel-action-button"]').catch(() => {});
     await wait(500);
@@ -861,13 +927,13 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
 }
 
 /** Pievieno VIENU kursu (viens action modālis = viens kurss). */
-async function addOneCourse(page, clientId, courseId, expiresDate) {
+async function addOneCourse(page, clientId, courseId, expiresDate, courseOpts = {}) {
   await openAddCourseModal(page, clientId);
-  const filled = await fillCourse(page, courseId, expiresDate);
+  const filled = await fillCourse(page, courseId, expiresDate, courseOpts);
 
   if (filled && filled.alreadyHas) {
     log(`  Kurss #${courseId} jau ir klientam — pārbaudu/atjauninu expiry (politika: ${EXPIRY_POLICY})`);
-    return await changeExpiry(page, clientId, courseId, expiresDate);
+    return await changeExpiry(page, clientId, courseId, expiresDate, courseOpts);
   }
 
   if (DRY_RUN) {
@@ -1054,8 +1120,11 @@ async function addCoursesToClient(email, courseIds, expiresDate, meta = {}, opts
 
     log(`Atrasts klients ${email} (ID ${clientId}) — ${flattened ? 'JAU IR kurss → visu uzreiz,' : ''} pieslēdzu ${toConnect.length} kursus`);
     const done = [];
+    // per-kurss nosacījumi: mūža piekļuve konkrētiem kursiem + stack (pieskaita esošajam termiņam)
+    const lifelongSet = new Set((opts.lifelongCourses || []).map(Number));
     for (const courseId of toConnect) {
-      await addOneCourse(page, clientId, courseId, expiresDate);
+      const courseOpts = { lifelong: lifelongSet.has(Number(courseId)), stackFrom: opts.stackFrom, stackDays: opts.stackDays };
+      await addOneCourse(page, clientId, courseId, expiresDate, courseOpts);
       done.push(courseId);
     }
     // iekšējā Nova ziņa (vienreiz, ja produktam definēta)
@@ -1076,7 +1145,8 @@ const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
 
 async function processCourses(email, courses, expires, source, meta = {}, opts = {}) {
   const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
-  const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg, orderGid: opts.orderGid };
+  const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg, orderGid: opts.orderGid,
+    lifelongCourses: opts.lifelongCourses, stackFrom: opts.stackFrom, stackDays: opts.stackDays };
   // ieliek aizkavētās drip grupas rindā (jauniem klientiem)
   const queueDelayed = () => (opts.delayedGroups || []).forEach((g) =>
     addJob({ email, courses: g.courses, expires, source: `Shopify ${opts.label} +${g.delayDays}d`, runAt: Date.now() + g.delayDays * 86400000, ...jobMeta }));
@@ -1125,7 +1195,15 @@ function resolveExpires(mapping) {
     return mapping.expires; // pirms cutoff -> fiksētais sezonas datums
   }
   if (mapping.expiresDays) return relative(mapping.expiresDays);
+  // stack: bāzes datums + N dienas (ja klientam kurss jau aktīvs, pieskaita viņa beigu datumam — skat. addOneCourse)
+  if (mapping.stackFrom && mapping.stackDays) return addDays(mapping.stackFrom, mapping.stackDays);
   return mapping.expires;
+}
+
+/** YYYY-MM-DD + n dienas -> YYYY-MM-DD */
+function addDays(dateStr, n) {
+  const d = new Date(`${String(dateStr).slice(0, 10)}T00:00:00Z`);
+  return new Date(d.getTime() + n * 86400000).toISOString().slice(0, 10);
 }
 
 function processOrder(order) {
@@ -1177,7 +1255,8 @@ function processOrder(order) {
 
     log(`Pasūtījums ${email}: Shopify ${mapping.label} -> uzreiz ${immediate}${delayedGroups.length ? `, drip ${extraCourses}` : ''} (līdz ${expires})`);
     // uzreiz apstrādā tūlītējo grupu; ja esošam klientam jau ir kāds kurss -> pieslēdz arī aizkavētās uzreiz (flatten)
-    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid, upsell: !!mapping.upsell });
+    processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid, upsell: !!mapping.upsell,
+      lifelongCourses: mapping.lifelongCourses, stackFrom: mapping.stackFrom, stackDays: mapping.stackDays });
   }
 }
 
@@ -1206,7 +1285,8 @@ async function runJobsCycle() {
       }
       const ctx = { email: job.email, name: job.name, productTitle: job.productTitle, productImage: job.productImage };
       try {
-        const res = await addCoursesToClient(job.email, job.courses, job.expires, { welcomeMsg: job.welcomeMsg });
+        const res = await addCoursesToClient(job.email, job.courses, job.expires, { welcomeMsg: job.welcomeMsg },
+          { lifelongCourses: job.lifelongCourses, stackFrom: job.stackFrom, stackDays: job.stackDays });
         if (res.registered === false) {
           job.attempts = (job.attempts || 0) + 1;
           job.runAt = now + RETRY_MS; // vēl nav reģistrējies — mēģina vēlāk
@@ -1502,16 +1582,20 @@ app.post('/webhook/shopify', (req, res) => {
 // POST /add  { "email": "...", "courses": [190,196], "expires": "2026-08-20", "delayDays": 0 }
 app.post('/add', async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { email, courses, expires, delayDays } = req.body || {};
-  if (!email || !Array.isArray(courses) || !expires) return res.status(400).json({ error: 'vajag email, courses[], expires' });
+  const { email, courses, expires, delayDays, lifelongCourses, stackFrom, stackDays } = req.body || {};
+  // mūža piekļuvei expires nav vajadzīgs (visi kursi lifelong)
+  const allLifelong = Array.isArray(lifelongCourses) && Array.isArray(courses) && courses.every((c) => lifelongCourses.map(Number).includes(Number(c)));
+  if (!email || !Array.isArray(courses) || (!expires && !allLifelong)) return res.status(400).json({ error: 'vajag email, courses[], expires (vai visiem lifelongCourses)' });
+  const exp = expires || '2099-12-31';
+  const extras = { lifelongCourses, stackFrom, stackDays };
   const d = Number(delayDays) || 0;
   if (d > 0) {
-    addJob({ email: email.toLowerCase(), courses, expires, source: `manuāls /add +${d}d`, runAt: Date.now() + d * 86400000 });
+    addJob({ email: email.toLowerCase(), courses, expires: exp, source: `manuāls /add +${d}d`, runAt: Date.now() + d * 86400000, ...extras });
     return res.json({ scheduled: true, delayDays: d });
   }
   // tūlītējs — atbild uzreiz, apstrādā fonā (citādi Railway HTTP proxy taimauts ~30s)
-  res.status(202).json({ accepted: true, email: email.toLowerCase(), courses });
-  processCourses(email.toLowerCase(), courses, expires, 'manuāls /add').catch((e) => log('/add fona kļūda:', e.message));
+  res.status(202).json({ accepted: true, email: email.toLowerCase(), courses, lifelong: lifelongCourses || null });
+  processCourses(email.toLowerCase(), courses, exp, 'manuāls /add', {}, extras).catch((e) => log('/add fona kļūda:', e.message));
 });
 
 // Kalkulatora pieejas piešķiršana (backfill / manuāls). Aizsargāts ar ADMIN_TOKEN.
@@ -2118,7 +2202,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'unique-reports-2026-08-11';
+const BUILD = 'gimenes-lifelong-2026-08-12';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
