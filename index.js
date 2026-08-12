@@ -270,7 +270,20 @@ async function notifyWhatsApp(text) {
   log('WhatsApp nosūtīts');
 }
 
+// Klusuma režīms: apslāpē RUTĪNAS paziņojumus (✅ pirkumi/pieslēgšana), bet kļūdas (❌/⚠️) VIENMĒR iet cauri.
+const ADMIN_MUTE_FILE = process.env.ADMIN_MUTE_FILE || path.join(path.dirname(REMINDERS_FILE), 'admin-mute.json');
+function isAdminMuted() {
+  try { const m = JSON.parse(fs.readFileSync(ADMIN_MUTE_FILE, 'utf8')); return !!m.muted && (!m.until || Date.now() < m.until); }
+  catch { return false; }
+}
+function setAdminMute(muted, until) {
+  try { fs.writeFileSync(ADMIN_MUTE_FILE, JSON.stringify({ muted: !!muted, until: until || null, at: Date.now() })); return true; }
+  catch (e) { log('admin-mute save', e.message); return false; }
+}
+
 async function notifyAdmin(text) {
+  const isProblem = /^[❌⚠️]/.test(String(text).trim());
+  if (isAdminMuted() && !isProblem) { log(`[klusums] admin paziņojums apslāpēts: ${String(text).slice(0, 60)}`); return; }
   try { await notifyWhatsApp(text); } catch (e) { log('WhatsApp kļūda:', e.message); }
   try { if (process.env.ADMIN_EMAIL) await notifyEmail(process.env.ADMIN_EMAIL, 'Nova Bot', text); }
   catch (e) { log('E-pasta kļūda:', e.message); }
@@ -2175,6 +2188,19 @@ app.get('/notif-off', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Admin paziņojumu klusuma režīms. GET /admin-mute (statuss) | /admin-mute?on=1[&hours=24] | /admin-mute?on=0
+// Klusums apslāpē TIKAI rutīnas (✅) ziņas; kļūdas (❌/⚠️) vienmēr tiek sūtītas.
+app.get('/admin-mute', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const on = req.query.on;
+  if (on === undefined) return res.json({ muted: isAdminMuted() });
+  if (on === '0') { setAdminMute(false); return res.json({ muted: false }); }
+  const hours = Number(req.query.hours) || 0;
+  const until = hours > 0 ? Date.now() + hours * 3600000 : null;
+  setAdminMute(true, until);
+  res.json({ muted: true, until: until ? new Date(until).toISOString() : 'bez termiņa', note: 'Kļūdas (❌/⚠️) joprojām tiek sūtītas' });
+});
+
 app.get('/jobs', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); });
 app.get('/pending', (req, res) => { if (!requireAdmin(req, res)) return; res.json(loadJobs()); }); // saderībai
 
@@ -2207,7 +2233,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'gimenes-ready-2026-08-12';
+const BUILD = 'admin-mute-2026-08-12';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
