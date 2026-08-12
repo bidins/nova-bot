@@ -167,6 +167,7 @@ const PRODUCT_COURSE_MAP = {
   '53489009918218': {
     label: 'Ģimenes uz mūžu €67/€29', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg',
     lifelongCourses: [198], courses: [198],
+    skipEmails: true, audience: 'gimenes', // sava vēstule nāks atsevišķi; pircējus krāj 'gimenes' sarakstā
   },
 
   // €117 (akcijā €79): Ģimenes (#198) MŪŽĀ + pilnais komplekts (kā Vasaras dārgākajā) uz 84 dienām no 07.09.
@@ -175,6 +176,7 @@ const PRODUCT_COURSE_MAP = {
     label: 'Ģimenes pilnais €117/€79', title: 'Ģimenes projekts', image: 'gimenes-projekts.jpg',
     lifelongCourses: [198], stackFrom: '2026-09-07', stackDays: 84,
     courses: [198, 190, 196, 159, 192, 172, 154, 164, 160, 165],
+    skipEmails: true, audience: 'gimenes',
   },
 
   // Pievieno citus produktus šeit
@@ -441,12 +443,15 @@ const ORIENTATION = {
 };
 
 /** Nosūta orientation e-pastu vienreiz (tikai līdz ORIENTATION_UNTIL; pēc tam no-op). */
-async function maybeSendOrientation(ctx) {
+async function maybeSendOrientation(ctx, opts = {}) {
   if (DRY_RUN || !ctx || !ctx.email) return;
   const map = loadState();
   const st = map[ctx.email] || {};
-  // katrs pieslēgtais klients VIENMĒR nonāk Vasaras sarakstā (arī ja welcome jau sūtīts) — lai neviens nepazūd
-  try { reminders.addToAudience('vasaras', { email: ctx.email, name: ctx.name, gender: guessGender(ctx.name) }); } catch (e) { log('audience add', e.message); }
+  // katrs pieslēgtais klients VIENMĒR nonāk sava produkta sarakstā (arī ja welcome jau sūtīts) — lai neviens nepazūd
+  const list = opts.audience || 'vasaras';
+  try { reminders.addToAudience(list, { email: ctx.email, name: ctx.name, gender: guessGender(ctx.name) }); } catch (e) { log('audience add', e.message); }
+  // skipEmails: produkts ar savu vēstuli (piem. Ģimenes) — sarakstā ieliek, bet Vasaras welcome NESŪTA
+  if (opts.skipEmails) { log(`Welcome izlaists (${list} produkts ar savu vēstuli): ${ctx.email}`); return; }
   if (st.orientSent) return; // jau nosūtīts (bota state)
   if (reminders.hasSentCampaign(ctx.email, 'orientation')) { map[ctx.email] = { ...st, orientSent: true }; saveState(map); return; } // jau saņēmis (piem. 89 backfill)
   try {
@@ -1159,7 +1164,8 @@ const RETRY_MS = RETRY_INTERVAL_MIN * 60 * 1000;
 async function processCourses(email, courses, expires, source, meta = {}, opts = {}) {
   const ctx = { email, name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage };
   const jobMeta = { name: meta.name, productTitle: meta.productTitle, productImage: meta.productImage, welcomeMsg: meta.welcomeMsg, orderGid: opts.orderGid,
-    lifelongCourses: opts.lifelongCourses, stackFrom: opts.stackFrom, stackDays: opts.stackDays };
+    lifelongCourses: opts.lifelongCourses, stackFrom: opts.stackFrom, stackDays: opts.stackDays,
+    skipEmails: opts.skipEmails, audience: opts.audience };
   // ieliek aizkavētās drip grupas rindā (jauniem klientiem)
   const queueDelayed = () => (opts.delayedGroups || []).forEach((g) =>
     addJob({ email, courses: g.courses, expires, source: `Shopify ${opts.label} +${g.delayDays}d`, runAt: Date.now() + g.delayDays * 86400000, ...jobMeta }));
@@ -1174,8 +1180,8 @@ async function processCourses(email, courses, expires, source, meta = {}, opts =
     }
     const connected = (res.done && res.done.join(', ')) || courses.join(', ');
     await notifyAdmin(`✅ ${email}: pieslēgti kursi ${connected}${res.flattened ? ' (visu uzreiz — esošs klients)' : ''}${DRY_RUN ? ' [DRY_RUN]' : ''}.`);
-    await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
-    await maybeSendOrientation(ctx); // orientation "pirmā diena" (pagaidu, līdz ORIENTATION_UNTIL)
+    if (!opts.skipEmails) await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz; produkti ar savu vēstuli to izlaiž)
+    await maybeSendOrientation(ctx, { audience: opts.audience, skipEmails: opts.skipEmails }); // sarakstā vienmēr; welcome tikai ja produktam nav savas vēstules
     if (opts.upsell) await maybeSendUpsellConfirm(ctx); // TIKAI pēc reāla papildinājuma pirkuma (€20/€30), ne pēc jebkura flatten
     if (opts.orderGid) await fulfillShopifyOrder(opts.orderGid); // klients atrasts+pieslēgts -> Shopify fulfilled
     if (!res.flattened) queueDelayed(); // jauns klients -> drip turpinās; flatten -> viss jau pieslēgts
@@ -1274,7 +1280,8 @@ function processOrder(order) {
     log(`Pasūtījums ${email}: Shopify ${mapping.label} -> uzreiz ${immediate}${delayedGroups.length ? `, drip ${extraCourses}` : ''} (līdz ${expires})`);
     // uzreiz apstrādā tūlītējo grupu; ja esošam klientam jau ir kāds kurss -> pieslēdz arī aizkavētās uzreiz (flatten)
     processCourses(email, immediate, expires, `Shopify ${mapping.label}`, meta, { extraCourses, delayedGroups, label: mapping.label, orderGid, upsell: !!mapping.upsell,
-      lifelongCourses: mapping.lifelongCourses, stackFrom: mapping.stackFrom, stackDays: mapping.stackDays });
+      lifelongCourses: mapping.lifelongCourses, stackFrom: mapping.stackFrom, stackDays: mapping.stackDays,
+      skipEmails: !!mapping.skipEmails, audience: mapping.audience });
   }
 }
 
@@ -1312,8 +1319,8 @@ async function runJobsCycle() {
         } else {
           log(`Job izpildīts: ${job.email} [${job.courses}]`);
           await notifyAdmin(`✅ (rindā) ${job.email}: pieslēgti kursi ${job.courses.join(', ')} (${job.source}).`);
-          await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
-          await maybeSendOrientation(ctx); // orientation "pirmā diena" (pagaidu, līdz ORIENTATION_UNTIL)
+          if (!job.skipEmails) await sendReadyEmail(ctx); // "kursi pieslēgti" (vienreiz)
+          await maybeSendOrientation(ctx, { audience: job.audience, skipEmails: job.skipEmails });
           if (job.orderGid) await fulfillShopifyOrder(job.orderGid); // klients tagad reģistrējies -> Shopify fulfilled
           resolvedIds.add(job.id);
         }
@@ -2233,7 +2240,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'admin-mute-2026-08-12';
+const BUILD = 'gimenes-noemails-2026-08-12';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
