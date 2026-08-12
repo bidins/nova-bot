@@ -370,7 +370,7 @@ function readyEmail(ctx) {
   const g = guessGender(ctx.name);
   const greet = g === 'f' ? 'Sveika!' : g === 'm' ? 'Sveiks!' : 'Sveiki!';
   const body = `<h1 style="margin:0 0 14px 0;font-size:22px;color:#173A2C;">${greet}</h1>
-<p style="margin:0 0 14px 0;font-size:17px;line-height:1.55;">Kursi ir pieslēgti. ✅</p>
+<p style="margin:0 0 14px 0;font-size:17px;line-height:1.55;">Kursi ir pieslēgti.</p>
 <p style="margin:0 0 14px 0;font-size:16px;line-height:1.55;">Paldies.</p>
 <p style="margin:0 0 24px 0;font-size:16px;line-height:1.55;">Lūdzu, izlasi <strong>pamācību</strong> un vēstuli no manis.</p>
 ${ctaButton(COURSES_URL, 'Uz maniem kursiem →')}
@@ -1243,7 +1243,12 @@ function processOrder(order) {
   for (const item of lineItems) {
     const variantId = String(item.variant_id);
     const mapping = PRODUCT_COURSE_MAP[variantId];
-    if (!mapping) { log(`Variant ${variantId} nav kartē — izlaižam`); continue; }
+    if (!mapping) {
+      log(`Variant ${variantId} nav kartē — izlaižam`);
+      // NEKLUSĒ: nekartēts variants = pircējs samaksāja, bet kursus nesaņems -> jāzina uzreiz
+      notifyAdmin(`⚠️ ${email}: nopirka variantu ${variantId} ("${item.title || '?'}"), kas NAV bota kartē — kursi NETIKA pieslēgti. Jāpieslēdz manuāli.`).catch(() => {});
+      continue;
+    }
 
     // beigu datums aprēķināts VIENREIZ pirkuma brīdī — visas grupas (arī drip) dabū to pašu
     const expires = resolveExpires(mapping);
@@ -2202,7 +2207,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'gimenes-lifelong-2026-08-12';
+const BUILD = 'gimenes-ready-2026-08-12';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
