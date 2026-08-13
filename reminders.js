@@ -474,9 +474,28 @@ function getReports(){
 function processUnsub(email, token){
   if (!email || token !== unsubToken(email)) return false;
   const s = loadStore(); const k = email.toLowerCase();
-  if (s[k]) { s[k].unsub = true; saveStore(s); }
+  // KRITISKI: karogu uzliek VIENMĒR, arī ja kontakta store vēl nav (piem. adresāts no backup saraksta).
+  // Agrāk bija `if (s[k])` — tad atrakstīšanās tika tikai ierakstīta žurnālā, bet sūtīšanas filtrs to neredzēja.
+  s[k] = { ...(s[k] || { name: '', gender: 'f', expiry: null, sent: {} }), unsub: true };
+  saveStore(s);
   recordEvent({ t: 'unsubscribed', email: k, at: Date.now() });
   return true;
+}
+
+/** Backfill: uzliek unsub karogu VISIEM, kam žurnālā ir 'unsubscribed' notikums (labo veco kļūdu). */
+function backfillUnsubs(){
+  const s = loadStore();
+  let fixed = 0, already = 0;
+  for (const e of loadEvents()) {
+    if (e.t !== 'unsubscribed') continue;
+    const k = String(e.email || '').trim().toLowerCase();
+    if (!k || k.indexOf('@') < 1) continue;
+    if (s[k] && s[k].unsub) { already++; continue; }
+    s[k] = { ...(s[k] || { name: '', gender: 'f', expiry: null, sent: {} }), unsub: true };
+    fixed++;
+  }
+  saveStore(s);
+  return { fixed, already, total: fixed + already };
 }
 
 // ---- Piekļuves atjaunināšana (izsauc no grantCalcAccess) — uztur email->termiņš + atiestata sekvenci ----
@@ -615,6 +634,11 @@ function wireReminders(app, deps){
       contacts.push({ email: e, name: c.name || '', gender: c.gender || 'f', expiry: exp });
     }
     res.json({ count: contacts.length, expiredSkipped: expired, unsubSkipped: unsub, totalStore: Object.keys(store).length, contacts });
+  });
+  // Backfill: sinhronizē unsub karogus ar žurnālu (labo veco kļūdu, kad karogs netika uzlikts). POST /calc-unsub-backfill
+  app.post('/calc-unsub-backfill', (req, res) => {
+    if (deps && deps.requireAdmin && !deps.requireAdmin(req, res)) return;
+    res.json(backfillUnsubs());
   });
   // Atzīmē e-pastu kā ATRAKSTĪTU store (globāla izslēgšana no VISIEM turpmākiem sūtījumiem, piem. refunds). POST /calc-suppress {email}
   app.post('/calc-suppress', require('express').json(), (req, res) => {
