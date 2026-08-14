@@ -994,6 +994,63 @@ async function pauseExpiredCourses(page, clientId, opts = {}) {
   return { paused: pausedIds, diag };
 }
 
+/** Atjauno (restore) APTURĒTUS kursus klientam. Termiņa maiņa apturētu kursu NEatjauno —
+ *  vajag Nova darbību "restore-access-client-to-course". Atgriež {restored:[...], notFound:[...]}. */
+async function restoreCourses(page, clientId, courseIds, opts = {}) {
+  const dry = opts.dry || DRY_RUN;
+  const restored = [], notFound = [];
+  for (const courseId of courseIds) {
+    await page.goto(`${NOVA_BASE}/resources/clients/${clientId}`, { waitUntil: 'networkidle2' });
+    await wait(2200);
+    // per-page max, lai visi kursi vienā lapā
+    await page.evaluate(() => {
+      const t = [...document.querySelectorAll('table')].find((tb) => {
+        const hs = [...tb.querySelectorAll('thead th, thead td')].map((th) => th.textContent.toUpperCase());
+        return hs.some((h) => h.includes('EXPIRES AT')) && hs.some((h) => h.includes('LIFE LONG'));
+      });
+      const box = t && (t.closest('[dusk$="-index-component"]') || t.closest('div'));
+      const sel = box && box.querySelector('select');
+      if (sel) {
+        const nums = [...sel.options].map((o) => parseInt(o.value, 10)).filter((n) => !isNaN(n));
+        const max = Math.max(...nums, 0);
+        if (max && String(max) !== sel.value) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+          setter.call(sel, String(max));
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+    });
+    await wait(2000);
+    const checked = await page.evaluate((id) => {
+      const el = document.querySelector(`[dusk="${id}-checkbox"]`);
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      (el.querySelector('input') || el).click();
+      return true;
+    }, courseId);
+    if (!checked) { log(`  Restore: nav rindas kursam #${courseId}`); notFound.push(courseId); continue; }
+    await wait(600);
+    const ok = await page.evaluate(() => {
+      const s = [...document.querySelectorAll('select[dusk="action-select"]')].find((sel) => [...sel.options].some((o) => o.value === 'restore-access-client-to-course'));
+      if (!s) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, 'restore-access-client-to-course');
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    });
+    if (!ok) { log(`  Restore: nav "Restore access" darbības (#${courseId})`); notFound.push(courseId); continue; }
+    await page.waitForSelector('[dusk="confirm-action-button"]', { timeout: 8000 });
+    await wait(700);
+    if (dry) { log(`  [DRY] Atjaunotu #${courseId}`); await page.click('[dusk="cancel-action-button"]').catch(() => {}); restored.push(courseId); continue; }
+    await page.click('[dusk="confirm-action-button"]');
+    await page.waitForFunction(() => !document.querySelector('[dusk="modal-backdrop"]'), { timeout: 15000 }).catch(() => {});
+    await wait(1200);
+    log(`  Restore: #${courseId} atjaunots`);
+    restored.push(courseId);
+  }
+  return { restored, notFound };
+}
+
 /** Pievieno VIENU kursu (viens action modālis = viens kurss). */
 async function addOneCourse(page, clientId, courseId, expiresDate, courseOpts = {}) {
   await openAddCourseModal(page, clientId);
@@ -1823,6 +1880,25 @@ app.get('/change-email', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Atjauno apturētus kursus. GET /restore-courses?email=X&courses=172,154,164,160,165[&dry=1]
+app.get('/restore-courses', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  const ids = String(req.query.courses || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const dry = req.query.dry === '1';
+  if (!email || !ids.length) return res.status(400).json({ error: 'vajag email + courses=1,2,3' });
+  try {
+    const out = await withBrowser(async (page) => {
+      await login(page);
+      const clientId = await findClientId(page, email);
+      if (!clientId) return { error: 'nav klienta', email };
+      const r = await restoreCourses(page, clientId, ids, { dry });
+      return { clientId, email, dry, ...r };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Nolasa visus Nova kursus (id + nosaukums) — lai atrastu jaunus kursus, kas vēl nav courses-map.json.
 // GET /nova-courses[?q=imenes]
 app.get('/nova-courses', async (req, res) => {
@@ -2292,7 +2368,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'unsub-fix-2026-08-13';
+const BUILD = 'restore-courses-2026-08-14';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
