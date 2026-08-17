@@ -1969,11 +1969,25 @@ app.get('/fix-order', async (req, res) => {
     const node = data && data.orders && data.orders.edges[0] && data.orders.edges[0].node;
     if (!node) return res.json({ error: 'pasūtījums nav atrasts', order: orderName });
     let email = (node.email || '').toLowerCase();
+    let cleaned = null;
     if (newEmail && newEmail !== email) {
       const m = `mutation($input:OrderInput!){orderUpdate(input:$input){order{id email} userErrors{field message}}}`;
       const mr = await shopifyGraphql(m, { input: { id: node.id, email: newEmail } });
       const ue = mr && mr.orderUpdate && mr.orderUpdate.userErrors;
       if (ue && ue.length) return res.json({ error: 'orderUpdate kļūda', details: ue });
+      // VECAIS e-pasts jāiztīra: citādi rindā paliek darbs, kas atkal nesekmīgi meklē kontu
+      // un sūta klientam "reģistrējies ar šo e-pastu" atgādinājumus uz nepareizo adresi.
+      const oldEmail = email;
+      const beforeJobs = loadJobs();
+      const keptJobs = beforeJobs.filter((j) => (j.email || '').toLowerCase() !== oldEmail);
+      const removedJobs = beforeJobs.length - keptJobs.length;
+      if (removedJobs) saveJobs(keptJobs);
+      const st = loadState();
+      const hadState = !!st[oldEmail];
+      if (hadState) { delete st[oldEmail]; saveState(st); }
+      const rem = reminders.removeContact(oldEmail);
+      cleaned = { oldEmail, jobs: removedJobs, state: hadState, reminder: rem };
+      log(`fix-order: vecais ${oldEmail} iztīrīts (jobs=${removedJobs}, state=${hadState})`);
       email = newEmail;
     }
     const order = {
@@ -1984,7 +1998,7 @@ app.get('/fix-order', async (req, res) => {
       line_items: (node.lineItems.edges || []).map((e) => ({ variant_id: variantIdOf(e.node.variant && e.node.variant.id) })),
     };
     processOrder(order); // fona: pieslēdz, fulfill, e-pasti, forums, pauze, orientation
-    res.json({ ok: true, order: node.name, email, variants: order.line_items.map((l) => l.variant_id) });
+    res.json({ ok: true, order: node.name, email, variants: order.line_items.map((l) => l.variant_id), cleaned });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2368,7 +2382,7 @@ app.get('/calc-access.json', (_req, res) => {
   res.json(loadCalcHashes());
 });
 
-const BUILD = 'restore-courses-2026-08-14';
+const BUILD = 'fixorder-cleanup-2026-08-15';
 app.get('/', (_req, res) => res.send('Nova Bot darbojas! build=' + BUILD)); // health — bez datiem
 
 app.listen(PORT, () => {
